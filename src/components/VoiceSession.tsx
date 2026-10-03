@@ -71,6 +71,8 @@ export default function VoiceSession({
   const [reminding, setReminding] = useState(false);
   // Text of the current on-screen reminder banner (null = hidden).
   const [reminderBanner, setReminderBanner] = useState<string | null>(null);
+  // True while doing the post-task check-in (feelings / pain / warning signs).
+  const [checkinPhase, setCheckinPhase] = useState(false);
   useEffect(() => {
     const tick = () => {
       const d = new Date();
@@ -238,6 +240,23 @@ export default function VoiceSession({
               setReminderBanner(null);
               markOutcome(active.key, 'done');
               console.log(`[confirm] logged DONE for ${active.key}`);
+
+              // Move into the post-task CHECK-IN: nudge the AI to ask how the
+              // patient feels / any pain / warning signs, one at a time.
+              setCheckinPhase(true);
+              const aiNow = aiRef.current;
+              if (aiNow) {
+                void aiNow
+                  .sendText(agentUID, {
+                    messageType: ChatMessageType.TEXT,
+                    text: 'SYSTEM: The patient confirmed the task is done. Now do a short check-in: ask how they feel, if they have any pain, and if they notice any warning signs — ONE question at a time. When finished, say you will wait for the next task, then stop.',
+                    priority: ChatMessagePriority.APPEND,
+                    responseInterruptable: true,
+                  })
+                  .catch(() => {});
+                // Auto-clear the check-in phase after a reasonable window.
+                setTimeout(() => setCheckinPhase(false), 90000);
+              }
               return; // handled; skip the generic record-turn path
             }
 
@@ -522,23 +541,27 @@ export default function VoiceSession({
   // High-level session status for the top chip.
   const statusLabel = reminding
     ? 'Reminding'
-    : display === 'connecting'
-      ? 'Connecting'
-      : display === 'speaking'
-        ? 'Talking'
-        : display === 'thinking'
-          ? 'Thinking'
-          : agentState === 'listening'
-            ? 'Listening'
-            : 'Standby';
+    : checkinPhase
+      ? 'Check-in'
+      : display === 'connecting'
+        ? 'Connecting'
+        : display === 'speaking'
+          ? 'Talking'
+          : display === 'thinking'
+            ? 'Thinking'
+            : agentState === 'listening'
+              ? 'Listening'
+              : 'Standby';
 
   const statusColor = reminding
     ? 'bg-amber-500/20 text-amber-200 ring-amber-400/40'
-    : statusLabel === 'Talking'
-      ? 'bg-sky-500/20 text-sky-200 ring-sky-400/40'
-      : statusLabel === 'Listening'
-        ? 'bg-emerald-500/20 text-emerald-200 ring-emerald-400/40'
-        : 'bg-slate-500/20 text-slate-200 ring-slate-400/40';
+    : checkinPhase
+      ? 'bg-purple-500/20 text-purple-200 ring-purple-400/40'
+      : statusLabel === 'Talking'
+        ? 'bg-sky-500/20 text-sky-200 ring-sky-400/40'
+        : statusLabel === 'Listening'
+          ? 'bg-emerald-500/20 text-emerald-200 ring-emerald-400/40'
+          : 'bg-slate-500/20 text-slate-200 ring-slate-400/40';
 
   return (
     <div className="flex min-h-dvh flex-col items-center justify-center gap-8 px-6 py-10 text-center">
@@ -576,6 +599,8 @@ export default function VoiceSession({
           "mt-10 flex h-60 w-60 items-center justify-center rounded-full animate-orb",
           reminding
             ? "bg-amber-500/20 ring-8 ring-amber-400 shadow-[0_0_80px_rgba(245,158,11,0.5)]"
+            : checkinPhase
+            ? "bg-purple-500/20 ring-8 ring-purple-400 shadow-[0_0_80px_rgba(168,85,247,0.5)]"
             : display === "speaking"
             ? "bg-[color:var(--speaking)]/20 ring-8 ring-[color:var(--speaking)] shadow-[0_0_80px_rgba(56,189,248,0.5)]"
             : display === "listening"
@@ -584,10 +609,14 @@ export default function VoiceSession({
         ].join(" ")}
         role="status"
         aria-live="polite"
-        aria-label={reminding ? 'Reminder' : statusText[display]}
+        aria-label={reminding ? 'Reminder' : checkinPhase ? 'Check-in' : statusText[display]}
       >
         <span className="px-4 text-2xl font-bold text-foreground">
-          {reminding ? 'Time for your task' : statusText[display]}
+          {reminding
+            ? 'Time for your task'
+            : checkinPhase
+              ? 'How are you feeling?'
+              : statusText[display]}
         </span>
       </div>
 
