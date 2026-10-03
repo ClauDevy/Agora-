@@ -39,7 +39,7 @@ export default function AdminLoginPage() {
         onSubmit={handleSubmit}
         className="animate-fade-up w-full max-w-sm rounded-[20px] border border-[color:var(--card-border)] bg-[color:var(--surface)]/80 p-8 shadow-[0_12px_40px_rgba(0,0,0,0.45)] backdrop-blur"
       >
-        <h1 className="text-2xl font-bold text-foreground">Clinician sign in</h1>
+        <h1 className="text-2xl font-bold text-foreground">Professional sign in</h1>
         <p className="mt-2 text-sm text-muted-foreground">
           Enter the shared password to manage patients and care plans.
         </p>

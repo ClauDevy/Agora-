@@ -23,7 +23,7 @@ export default async function ClinicianLayout({
           <Link href="/clinician" className="flex items-center gap-2">
             <span className="text-lg font-bold text-foreground">AlalAI</span>
             <span className="hidden text-xs text-muted-foreground sm:inline">
-              Clinician
+              Professional
             </span>
           </Link>
           <nav className="flex items-center gap-1 text-sm sm:gap-2">

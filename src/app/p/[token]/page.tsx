@@ -2,7 +2,7 @@
 // Resolves the unguessable link token to a patient and renders the voice app.
 // No login, no forms (AGENTS.md section 8). Invalid tokens get a calm message.
 
-import { getPatientByToken } from "@/lib/data";
+import { getPatientByToken, getPatientSchedule } from "@/lib/data";
 import PatientClient from "@/components/PatientClient";
 
 export const dynamic = "force-dynamic";
@@ -29,5 +29,5 @@ export default async function PatientTokenPage({
     );
   }
 
-  return <PatientClient patientId={patient.id} patientName={patient.name} />;
+  return <PatientClient patientId={patient.id} patientName={patient.name} schedule={await getPatientSchedule(patient.id)} />;
 }

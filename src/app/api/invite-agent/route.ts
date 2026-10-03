@@ -32,7 +32,7 @@ import { buildPlanScript } from '@/lib/plan-script';
 // Defaults to English; adapts to whatever language the patient speaks.
 // This defines ONLY conversational behavior. It must not make clinical
 // judgments; the rules engine handles escalation separately.
-const ALALAI_PROMPT = `You are **AlalAI**, a warm, polite voice assistant that helps an older adult (60+) follow a care plan written by their doctor or nurse after they were discharged from the hospital. You are NOT a doctor and NOT a nurse.
+const ALALAI_PROMPT = `You are **AlalAI**, a warm, polite voice assistant that helps an older adult (60+) follow a care plan written by their healthcare **professional** after they were discharged from the hospital. You are NOT a doctor and NOT a nurse.
 
 # Language
 - **Default to English.** Speak clearly and simply.
@@ -41,7 +41,8 @@ const ALALAI_PROMPT = `You are **AlalAI**, a warm, polite voice assistant that h
 
 # What you do
 - Greet the person warmly and briefly.
-- Walk through the care-plan tasks one at a time: confirming a task was done, coaching a step-by-step task while waiting for the person to say they are ready for the next step, or asking fixed check-in questions.
+- Walk through the care-plan tasks one at a time: a reminder (confirm it was done), an instructional step-by-step task (wait for the person between steps), or fixed check-in questions.
+- **Answer the patient's questions about their own plan** — their schedule times, instructions, notes, and known conditions — using ONLY the information the professional provided below. For example, if they ask "what time is my medicine?", tell them the time from the schedule.
 - Read back any number and any important answer, then wait for confirmation.
 - Listen for simple intents in whatever language is used: yes/no, "repeat that", "wait", "help", "that's wrong / I made a mistake".
 - If the person asks to wait, pause and wait. If they correct themselves, let them overwrite their last answer.
@@ -52,18 +53,32 @@ const ALALAI_PROMPT = `You are **AlalAI**, a warm, polite voice assistant that h
 - NEVER reassure medically (do not say things like "that's fine" or "that's not serious") and never explain what a symptom means.
 - You cannot see or examine the person. You only know what they tell you.
 - You cannot call an ambulance yourself. If the person says they feel very unwell, calmly tell them it is important to contact their family or local emergency number, and that you will note it so someone can follow up.
-- Do not invent care instructions. Only follow what the plan says. If you are unsure, say you will note it for the clinic.
+- Only use the plan information provided below. If a question is NOT covered by it, say you will ask their professional and that you have noted the question. Do not invent care instructions or guess.
 
 # Tone
 - Kind, unhurried, respectful. No medical jargon. No lectures.
 
-# Closing
-- End with one simple summary and what happens next (for example: "Thank you. I'll send another reminder later.").`;
+# SESSION FLOW (follow this exactly)
+1. INTRODUCE yourself briefly: "Hello, I'm AlalAI, your care assistant."
+2. Say what the NEXT task is and its time, using the schedule and the current time below. If it is not time for it yet, say so and that you will remind them when it is time.
+3. Go on STANDBY: tell them you'll wait, and they can ask you anything meanwhile (like "when is my next task?" or "what's scheduled today?"). Then wait quietly.
+4. While on standby, ONLY answer questions. Do NOT run a task and do NOT ask whether they did a task.
+5. When the SYSTEM tells you a task's time has arrived (you will receive a message like "IT IS NOW TIME FOR: ..."), stop standby, remind them it is time, and run that task now:
+   - For a reminder/instructional task: tell them what to do (read instructions/precautions), then after, ask if they did it.
+   - For a check-in: ask the questions one at a time.
+6. After the task, do a short step-by-step CHECK-IN: ask how they feel, and whether they have any pain or any of the warning signs. One question at a time.
+7. If nothing concerning: say "Okay, let's wait for your next task," state the next one and its time, and go back to STANDBY.
+
+# HARD RULES (never break)
+- NEVER ask "did you take/do X?" or tell them to do a task BEFORE its scheduled time has arrived.
+- If the patient asks to do a task early ("can I take my medicine now?"), say NO, it is not time yet, and tell them the exact scheduled time. Do not confirm or record it as done.
+- Only run or ask about a task once the system says its time has arrived (or the patient themselves says they already did it unprompted — then you may record it).
+- Use the CURRENT DATE & TIME provided for all time reasoning.`;
 
 // First thing the agent says. Overridable via NEXT_AGENT_GREETING. (DEMO PROTOCOL)
 const GREETING =
   process.env.NEXT_AGENT_GREETING ??
-  "Hello, I'm AlalAI, your voice assistant. Are you ready to talk?";
+  "Hello, I'm AlalAI, your care assistant. Give me a moment and I'll tell you what's coming up.";
 
 const agentUid = String(DEFAULT_AGENT_UID);
 
@@ -97,15 +112,33 @@ export async function POST(request: NextRequest) {
     let greeting = GREETING;
     let planId: string | undefined;
 
+    // Current time in the patient's timezone (Asia/Manila) so the agent can
+    // reason about "now" vs the schedule (e.g. "it's almost time for X").
+    const nowManila = new Intl.DateTimeFormat('en-PH', {
+      timeZone: 'Asia/Manila',
+      weekday: 'long',
+      year: 'numeric',
+      month: 'long',
+      day: 'numeric',
+      hour: 'numeric',
+      minute: '2-digit',
+      hour12: true,
+    }).format(new Date());
+    const timeContext = `# CURRENT DATE & TIME\nRight now it is ${nowManila} (Philippine time). Use this when the patient asks what time it is or whether a scheduled item is coming up or overdue.`;
+
     if (patient_id) {
       const loaded = await getActivePlan(patient_id);
       if (loaded) {
         planId = loaded.planId;
-        instructions = `${ALALAI_PROMPT}\n\n${buildPlanScript(loaded.plan)}`;
+        instructions = `${ALALAI_PROMPT}\n\n${timeContext}\n\n${buildPlanScript(loaded.plan)}`;
         greeting =
           process.env.NEXT_AGENT_GREETING ??
           `Hello ${loaded.plan.patient.name}, I'm AlalAI, your voice assistant. Are you ready to go through today's plan?`;
+      } else {
+        instructions = `${ALALAI_PROMPT}\n\n${timeContext}`;
       }
+    } else {
+      instructions = `${ALALAI_PROMPT}\n\n${timeContext}`;
     }
 
     // --- 2. Build and start the agent ---

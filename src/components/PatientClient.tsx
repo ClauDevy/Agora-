@@ -55,15 +55,22 @@ const AgoraProvider = dynamic(
 export default function PatientClient({
   patientId: patientIdProp,
   patientName,
+  schedule = [],
 }: {
   patientId?: string;
   patientName?: string;
+  schedule?: { time: string; label: string; type: string }[];
 } = {}) {
   const [showConversation, setShowConversation] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [agoraData, setAgoraData] = useState<AgoraTokenData | null>(null);
   const [rtmClient, setRtmClient] = useState<RTMClient | null>(null);
+  // Single RTM instance guard — prevents the "Ins id / mutual kick" warning
+  // from a second RTM client being created (StrictMode double-mount or restart).
+  const rtmRef = useRef<RTMClient | null>(null);
+  // Guard against handleStart running twice concurrently (double tap / StrictMode).
+  const startingRef = useRef(false);
 
   // Preload heavy browser modules so the first tap is snappy (quickstart note).
   useEffect(() => {
@@ -72,6 +79,10 @@ export default function PatientClient({
   }, []);
 
   const handleStart = async () => {
+    // Prevent a second concurrent start (double tap or StrictMode) from
+    // creating a duplicate RTM client ("Ins id is 2" / mutual kick).
+    if (startingRef.current || rtmRef.current) return;
+    startingRef.current = true;
     setIsLoading(true);
     setError(null);
 
@@ -115,12 +126,23 @@ export default function PatientClient({
 
         (async () => {
           const { default: AgoraRTM } = await import('agora-rtm');
+          // If a previous RTM client exists (e.g. restart or StrictMode remount),
+          // log it out first so we never have two live instances for one uid.
+          if (rtmRef.current) {
+            try {
+              await rtmRef.current.logout();
+            } catch {
+              /* ignore */
+            }
+            rtmRef.current = null;
+          }
           const client: RTMClient = new AgoraRTM.RTM(
             process.env.NEXT_PUBLIC_AGORA_APP_ID!,
             responseData.uid,
           );
           await client.login({ token: responseData.token });
           await client.subscribe(responseData.channel);
+          rtmRef.current = client;
           return client;
         })(),
       ]);
@@ -138,6 +160,7 @@ export default function PatientClient({
       console.error('Error starting conversation:', err);
     } finally {
       setIsLoading(false);
+      startingRef.current = false;
     }
   };
 
@@ -156,7 +179,9 @@ export default function PatientClient({
         console.error('Error stopping agent:', error);
       }
     }
-    rtmClient?.logout().catch((err) => console.error('RTM logout error:', err));
+    const client = rtmRef.current ?? rtmClient;
+    client?.logout().catch((err) => console.error('RTM logout error:', err));
+    rtmRef.current = null;
     setRtmClient(null);
     setAgoraData(null);
     setShowConversation(false);
@@ -175,6 +200,7 @@ export default function PatientClient({
           <VoiceSession
             agoraData={agoraData}
             rtmClient={rtmClient}
+            schedule={schedule}
             onEnd={handleEnd}
           />
         </AgoraProvider>

@@ -38,21 +38,25 @@ export type Answers = Record<string, AnswerValue>;
 
 export type BlockType = "confirm" | "coach" | "checkin";
 
-/** Ask whether a single task was done. */
+/** Ask whether a single task was done. Shown as "Reminder" in the UI. */
 export interface ConfirmBlock {
   id: string;
   type: "confirm";
   time: string; // "HH:MM", 24h
   text: string; // DEMO PROTOCOL content, e.g. "gamot sa umaga"
+  instructions?: string; // read to the patient as written
+  precautions?: string; // read to the patient as written
 }
 
-/** Walk through steps one at a time, waiting for "okay na" between each. */
+/** Walk through steps one at a time. Shown as "Instructional" in the UI. */
 export interface CoachBlock {
   id: string;
   type: "coach";
   time: string;
   steps: string[]; // DEMO PROTOCOL content
   needs_helper?: boolean;
+  instructions?: string;
+  precautions?: string;
 }
 
 /** A single question inside a check-in block. */
@@ -121,6 +125,8 @@ export interface PatientInfo {
   name: string;
   language: string; // e.g. "tl-en"
   contacts: string[];
+  illnesses?: string; // professional-entered conditions the agent may reference
+  generalInstructions?: string; // professional's free-text notes
 }
 
 export interface CarePlan {
@@ -128,6 +134,7 @@ export interface CarePlan {
   tasks: Block[];
   rules: Rule[];
   no_response: NoResponseConfig;
+  descriptiveWarnings?: string; // free-text warning signs the agent watches for
 }
 
 // ---------------------------------------------------------------------------

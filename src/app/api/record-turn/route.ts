@@ -27,7 +27,11 @@ import {
   getSessionAnswers,
   getSessionRules,
   getSessionQuestions,
+  getSessionConfirmables,
+  logTaskCompletion,
+  getSessionPatientPlan,
   type SessionQuestion,
+  type SessionConfirmable,
 } from '@/lib/data';
 
 interface RecordTurnRequest {
@@ -75,6 +79,31 @@ function matchQuestion(
   return best && best.score >= 0.5 ? best.q : null;
 }
 
+// Match the agent's "did you do X?" question to a reminder/instructional task
+// by checking whether the agent's words mention the task label.
+function matchConfirmable(
+  agentQuestion: string,
+  tasks: SessionConfirmable[],
+): SessionConfirmable | null {
+  const a = norm(agentQuestion);
+  if (!a) return null;
+  let best: { t: SessionConfirmable; score: number } | null = null;
+  for (const t of tasks) {
+    const label = norm(t.label);
+    if (!label) continue;
+    let score = 0;
+    if (a.includes(label)) {
+      score = 1;
+    } else {
+      const words = label.split(' ').filter((w) => w.length > 2);
+      const overlap = words.filter((w) => a.includes(w)).length;
+      score = words.length ? overlap / words.length : 0;
+    }
+    if (!best || score > best.score) best = { t, score };
+  }
+  return best && best.score >= 0.6 ? best.t : null;
+}
+
 export async function POST(request: NextRequest) {
   try {
     const body = (await request.json()) as RecordTurnRequest;
@@ -97,6 +126,47 @@ export async function POST(request: NextRequest) {
         // patient turn answers a tracked question, e.g. small talk).
         return NextResponse.json({ matched: false, reason: 'no_question' });
       }
+
+      // 1a. First, see if the agent was asking about a REMINDER/INSTRUCTIONAL
+      // task ("did you do X?"). If the patient said yes, log completion
+      // (done for today, with timestamp) and return.
+      const confirmables = await getSessionConfirmables(session_id);
+      const matchedTask = matchConfirmable(body.agent_question, confirmables);
+      if (matchedTask) {
+        const yn = await defaultExtractor.extract(utterance, {
+          key: matchedTask.blockKey,
+          type: 'yes_no',
+        });
+        if (yn === 'yes') {
+          const { patientId, planId } = await getSessionPatientPlan(session_id);
+          await logTaskCompletion({
+            patientId,
+            planId,
+            sessionId: session_id,
+            blockKey: matchedTask.blockKey,
+          });
+          return NextResponse.json({
+            matched: true,
+            completed: matchedTask.blockKey,
+            value: 'yes',
+          });
+        }
+        // Said no / unclear — record as an answer under the block key, no completion.
+        await saveAnswer({
+          sessionId: session_id,
+          questionKey: matchedTask.blockKey,
+          rawTranscript: utterance,
+          value: String(yn),
+          validationResult: yn === UNCLEAR ? 'unclear' : 'valid',
+        });
+        return NextResponse.json({
+          matched: true,
+          completed: null,
+          value: String(yn),
+        });
+      }
+
+      // 1b. Otherwise match a check-in question.
       const questions = await getSessionQuestions(session_id);
       const matched = matchQuestion(body.agent_question, questions);
       if (!matched) {

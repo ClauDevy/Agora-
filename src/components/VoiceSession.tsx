@@ -26,6 +26,8 @@ import {
   AgentState,
   TranscriptHelperMode,
   TurnStatus,
+  ChatMessageType,
+  ChatMessagePriority,
   type TranscriptHelperItem,
   type UserTranscription,
   type AgentTranscription,
@@ -42,6 +44,7 @@ interface VoiceSessionProps {
   agoraData: AgoraTokenData;
   rtmClient: RTMClient;
   onEnd: () => void;
+  schedule?: { time: string; label: string; type: string }[];
 }
 
 // Patient-facing status, derived from agent + connection state.
@@ -51,6 +54,7 @@ export default function VoiceSession({
   agoraData,
   rtmClient,
   onEnd,
+  schedule = [],
 }: VoiceSessionProps) {
   const client = useRTCClient();
   const remoteUsers = useRemoteUsers();
@@ -64,6 +68,10 @@ export default function VoiceSession({
   // most recent question text, so each answer is attributed to the right field.
   const submittedTurns = useRef<Set<string | number>>(new Set());
   const sessionId = agoraData.sessionId;
+  // Reference to the live AgoraVoiceAI instance (for proactive sendText reminders).
+  const aiRef = useRef<InstanceType<typeof AgoraVoiceAI> | null>(null);
+  // Task times already announced this session (avoid repeat reminders).
+  const firedTimes = useRef<Set<string>>(new Set());
 
   // StrictMode guard (from quickstart): delay useJoin's ready flag past the
   // fake-unmount cycle so the channel is joined exactly once.
@@ -141,6 +149,7 @@ export default function VoiceSession({
         ai.on(AgoraVoiceAIEvents.AGENT_STATE_CHANGED, (_, event) =>
           setAgentState(event.state),
         );
+        aiRef.current = ai;
 
         // Capture completed turns and send patient answers to the server-side
         // scoring loop. TRANSCRIPT_UPDATED delivers the FULL history each time.
@@ -209,6 +218,7 @@ export default function VoiceSession({
           ai.destroy();
         }
       } catch {}
+      aiRef.current = null;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isReady, joinSuccess]);
@@ -230,6 +240,58 @@ export default function VoiceSession({
   useClientEvent(client, 'connection-state-change', (curState) => {
     setConnectionState(curState);
   });
+
+  // --- Auto-reminder scheduler -------------------------------------------
+  // While the session is open, check the DEVICE's local time every 5s. A task
+  // is "due" when the current time is at or past its scheduled time (same day).
+  // When a task becomes due and hasn't been announced yet this session, tell the
+  // agent via sendText so it leaves standby and runs that task. Firing on ">="
+  // (not exact-minute equality) means a reminder still happens even if the exact
+  // minute tick was missed or the time already passed when the session started.
+  // Only works while the page is open (browsers can't wake a closed page).
+  useEffect(() => {
+    if (!isAgentConnected || schedule.length === 0) return;
+
+    const toMinutes = (hhmm: string) => {
+      const [h, m] = hhmm.split(':').map(Number);
+      return (h || 0) * 60 + (m || 0);
+    };
+
+    const check = () => {
+      const now = new Date();
+      const nowMin = now.getHours() * 60 + now.getMinutes();
+
+      for (const item of schedule) {
+        if (firedTimes.current.has(item.time)) continue;
+        const taskMin = toMinutes(item.time);
+        // Due when now is at/just past the scheduled time (within a 10-min
+        // window so we don't blast reminders for times long past at startup).
+        const late = nowMin - taskMin;
+        if (late < 0 || late > 10) continue;
+
+        const ai = aiRef.current;
+        if (!ai) continue; // agent not ready yet; try again next tick (don't mark fired)
+
+        firedTimes.current.add(item.time);
+        ai
+          .sendText(agentUID, {
+            messageType: ChatMessageType.TEXT,
+            text: `IT IS NOW TIME FOR: ${item.label} (scheduled ${item.time}). It is now ${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}. Stop standby, remind the patient it is time, run this task now, then do the after-task check-in.`,
+            priority: ChatMessagePriority.INTERRUPTED,
+            responseInterruptable: true,
+          })
+          .catch((e) => {
+            console.error('auto-reminder sendText failed:', e);
+            // Allow a retry on the next tick if sending failed.
+            firedTimes.current.delete(item.time);
+          });
+      }
+    };
+
+    check(); // run once immediately on connect
+    const id = setInterval(check, 5000);
+    return () => clearInterval(id);
+  }, [isAgentConnected, schedule, agentUID]);
 
   const handleEnd = useCallback(() => {
     onEnd();

@@ -35,6 +35,7 @@ interface TaskRow {
 interface RuleRow {
   label: string;
   key: string;
+  answerKind: 'yes_no' | 'number';
   op: string;
   value: string;
   then_level: 1 | 2 | 3;
@@ -49,11 +50,48 @@ const sectionCls =
 const btnGhost =
   'rounded-lg border border-[color:var(--card-border)] px-3 py-1.5 text-sm text-muted-foreground transition hover:text-foreground';
 
+// Quick time presets for friendlier schedule entry (no manual typing needed).
+const TIME_PRESETS: { label: string; value: string }[] = [
+  { label: 'Morning', value: '08:00' },
+  { label: 'Noon', value: '12:00' },
+  { label: 'Afternoon', value: '15:00' },
+  { label: 'Evening', value: '18:00' },
+  { label: 'Night', value: '21:00' },
+];
+
+// Normalize free-typed time (e.g. "4:20", "4:20 pm", "16:20", "420") to 24h HH:MM.
+// Returns the input unchanged if it can't be parsed (validation catches it on save).
+export function normalizeTime(raw: string): string {
+  const s = raw.trim().toLowerCase();
+  if (!s) return s;
+  const ampm = /(am|pm)$/.exec(s)?.[1];
+  const digits = s.replace(/[^0-9:]/g, '');
+  let h: number, m: number;
+  if (digits.includes(':')) {
+    const [hh, mm] = digits.split(':');
+    h = parseInt(hh, 10);
+    m = parseInt(mm ?? '0', 10);
+  } else if (digits.length <= 2) {
+    h = parseInt(digits, 10);
+    m = 0;
+  } else {
+    // e.g. "420" -> 4:20, "1620" -> 16:20
+    h = parseInt(digits.slice(0, digits.length - 2), 10);
+    m = parseInt(digits.slice(-2), 10);
+  }
+  if (Number.isNaN(h) || Number.isNaN(m)) return raw;
+  if (ampm === 'pm' && h < 12) h += 12;
+  if (ampm === 'am' && h === 12) h = 0;
+  if (h < 0 || h > 23 || m < 0 || m > 59) return raw;
+  return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
+}
+
 export default function NewPatientPage() {
   const [name, setName] = useState('');
   const [address, setAddress] = useState('');
   const [language, setLanguage] = useState('en');
   const [generalInstructions, setGeneralInstructions] = useState('');
+  const [illnesses, setIllnesses] = useState('');
   const [hospitalName, setHospitalName] = useState('');
   const [hospitalPhone, setHospitalPhone] = useState('');
   const [emergencyNumber, setEmergencyNumber] = useState('');
@@ -74,6 +112,7 @@ export default function NewPatientPage() {
     },
   ]);
   const [rules, setRules] = useState<RuleRow[]>([]);
+  const [descriptiveWarnings, setDescriptiveWarnings] = useState('');
 
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -103,6 +142,7 @@ export default function NewPatientPage() {
         address: address || undefined,
         language,
         general_instructions: generalInstructions || undefined,
+        illnesses: illnesses || undefined,
         hospital_name: hospitalName || undefined,
         hospital_phone: hospitalPhone || undefined,
         emergency_number: emergencyNumber || undefined,
@@ -154,6 +194,7 @@ export default function NewPatientPage() {
             then_level: r.then_level,
             patient_message: r.patient_message || undefined,
           })),
+        descriptive_warnings: descriptiveWarnings || undefined,
       };
 
       const res = await fetch('/api/admin/patients', {
@@ -247,6 +288,10 @@ export default function NewPatientPage() {
               <input className={`mt-1 ${inputCls}`} value={address} onChange={(e) => setAddress(e.target.value)} />
             </label>
             <label className={`${labelCls} sm:col-span-2`}>
+              Illnesses / diseases (conditions the agent may reference)
+              <textarea className={`mt-1 ${inputCls}`} rows={2} value={illnesses} onChange={(e) => setIllnesses(e.target.value)} placeholder="e.g. Type 2 diabetes, hypertension" />
+            </label>
+            <label className={`${labelCls} sm:col-span-2`}>
               General instructions (the agent may read / answer from these)
               <textarea className={`mt-1 ${inputCls}`} rows={3} value={generalInstructions} onChange={(e) => setGeneralInstructions(e.target.value)} />
             </label>
@@ -303,14 +348,38 @@ export default function NewPatientPage() {
                   <label className={labelCls}>
                     Type
                     <select className={`mt-1 ${inputCls}`} value={t.type} onChange={(e) => updateTask(i, { type: e.target.value as TaskType })}>
-                      <option value="confirm">Confirm (did you do it?)</option>
-                      <option value="coach">Coach (step-by-step)</option>
+                      <option value="confirm">Reminder (did you do it?)</option>
+                      <option value="coach">Instructional (step-by-step)</option>
                       <option value="checkin">Check-in (questions)</option>
                     </select>
                   </label>
                   <label className={labelCls}>
                     Time
-                    <input type="time" className={`mt-1 ${inputCls}`} value={t.time} onChange={(e) => updateTask(i, { time: e.target.value })} />
+                    <input
+                      type="text"
+                      inputMode="numeric"
+                      placeholder="e.g. 4:20 or 16:20"
+                      className={`mt-1 ${inputCls}`}
+                      value={t.time}
+                      onChange={(e) => updateTask(i, { time: e.target.value })}
+                      onBlur={(e) => updateTask(i, { time: normalizeTime(e.target.value) })}
+                    />
+                    <div className="mt-2 flex flex-wrap gap-1.5">
+                      {TIME_PRESETS.map((preset) => (
+                        <button
+                          key={preset.value}
+                          type="button"
+                          onClick={() => updateTask(i, { time: preset.value })}
+                          className={`rounded-full px-2.5 py-1 text-xs transition ${
+                            t.time === preset.value
+                              ? 'bg-[color:var(--primary)] text-[color:var(--primary-foreground)]'
+                              : 'border border-[color:var(--card-border)] text-muted-foreground hover:text-foreground'
+                          }`}
+                        >
+                          {preset.label}
+                        </button>
+                      ))}
+                    </div>
                   </label>
                   <button className={`${btnGhost} self-end`} onClick={() => setTasks(tasks.filter((_, j) => j !== i))}>Remove</button>
                 </div>
@@ -355,36 +424,104 @@ export default function NewPatientPage() {
           </div>
         </section>
 
-        {/* --- Rules --- */}
+        {/* --- Warning signs --- */}
         <section className={sectionCls}>
-          <div className="flex items-center justify-between">
-            <h2 className="text-lg font-semibold text-foreground">Warning signs (escalation rules)</h2>
-            <button className={btnGhost} onClick={() => setRules([...rules, { label: '', key: '', op: '==', value: 'yes', then_level: 2, patient_message: '' }])}>
+          <h2 className="text-lg font-semibold text-foreground">Warning signs</h2>
+
+          {/* Descriptive (free-text) warning signs */}
+          <div className="mt-3">
+            <label className={labelCls}>
+              Describe what to watch for (plain words)
+              <textarea
+                className={`mt-1 ${inputCls}`}
+                rows={3}
+                placeholder="e.g. If the wound looks worse, smells bad, or the patient feels very weak or dizzy, note it and contact family."
+                value={descriptiveWarnings}
+                onChange={(e) => setDescriptiveWarnings(e.target.value)}
+              />
+            </label>
+            <p className="mt-1 text-xs text-muted-foreground">
+              AlalAI will gently ask about these and flag them for you if the patient
+              mentions them. These are observations — they do not auto-escalate.
+            </p>
+          </div>
+
+          {/* Measurable rules */}
+          <div className="mt-6 flex items-center justify-between">
+            <h3 className="text-sm font-semibold text-foreground">
+              Measurable rules (auto-escalate)
+            </h3>
+            <button className={btnGhost} onClick={() => setRules([...rules, { label: '', key: '', answerKind: 'yes_no', op: '==', value: 'yes', then_level: 2, patient_message: '' }])}>
               + Add rule
             </button>
           </div>
           <p className="mt-1 text-xs text-muted-foreground">
-            If a check-in answer meets the condition, escalate to the chosen level. Level 1 = note, 2 = contact family, 3 = urgent.
+            A measurable rule watches one check-in answer and auto-escalates deterministically. For a yes/no question, pick the answer that should trigger. For a number (like pain 0–10), pick a comparison and a value. Level 1 = note, 2 = contact family, 3 = urgent.
           </p>
           <div className="mt-4 space-y-3">
             {rules.map((r, i) => (
-              <div key={i} className="grid gap-2 sm:grid-cols-[1fr_1fr_auto_1fr_1fr_auto]">
-                <input className={inputCls} placeholder="Label (e.g. Swelling)" value={r.label} onChange={(e) => setRules(rules.map((x, j) => (j === i ? { ...x, label: e.target.value } : x)))} />
-                <input className={inputCls} placeholder="question key" value={r.key} onChange={(e) => setRules(rules.map((x, j) => (j === i ? { ...x, key: e.target.value } : x)))} />
-                <select className={inputCls} value={r.op} onChange={(e) => setRules(rules.map((x, j) => (j === i ? { ...x, op: e.target.value } : x)))}>
-                  <option value="==">=</option>
-                  <option value=">=">≥</option>
-                  <option value="<=">≤</option>
-                  <option value=">">&gt;</option>
-                  <option value="<">&lt;</option>
-                </select>
-                <input className={inputCls} placeholder="value (yes/no/number)" value={r.value} onChange={(e) => setRules(rules.map((x, j) => (j === i ? { ...x, value: e.target.value } : x)))} />
-                <select className={inputCls} value={r.then_level} onChange={(e) => setRules(rules.map((x, j) => (j === i ? { ...x, then_level: Number(e.target.value) as 1 | 2 | 3 } : x)))}>
-                  <option value={1}>Level 1</option>
-                  <option value={2}>Level 2</option>
-                  <option value={3}>Level 3</option>
-                </select>
-                <button className={btnGhost} onClick={() => setRules(rules.filter((_, j) => j !== i))}>✕</button>
+              <div key={i} className="rounded-lg border border-[color:var(--card-border)] bg-background/40 p-3">
+                <div className="grid gap-2 sm:grid-cols-[1fr_1fr_auto]">
+                  <input className={inputCls} placeholder="Label (e.g. Swelling)" value={r.label} onChange={(e) => setRules(rules.map((x, j) => (j === i ? { ...x, label: e.target.value } : x)))} />
+                  <input className={inputCls} placeholder="Which question? (key, e.g. odor)" value={r.key} onChange={(e) => setRules(rules.map((x, j) => (j === i ? { ...x, key: e.target.value } : x)))} />
+                  <button className={btnGhost} onClick={() => setRules(rules.filter((_, j) => j !== i))}>Remove</button>
+                </div>
+                <div className="mt-2 flex flex-wrap items-center gap-2">
+                  <span className="text-sm text-muted-foreground">Trigger when the answer is</span>
+                  <select
+                    className="rounded-lg border border-[color:var(--card-border)] bg-background/60 px-2 py-1.5 text-sm text-foreground"
+                    value={r.answerKind}
+                    onChange={(e) => {
+                      const kind = e.target.value as 'yes_no' | 'number';
+                      setRules(rules.map((x, j) => (j === i ? { ...x, answerKind: kind, op: kind === 'yes_no' ? '==' : '>=', value: kind === 'yes_no' ? 'yes' : '8' } : x)));
+                    }}
+                  >
+                    <option value="yes_no">yes / no</option>
+                    <option value="number">a number</option>
+                  </select>
+
+                  {r.answerKind === 'yes_no' ? (
+                    <select
+                      className="rounded-lg border border-[color:var(--card-border)] bg-background/60 px-2 py-1.5 text-sm text-foreground"
+                      value={r.value}
+                      onChange={(e) => setRules(rules.map((x, j) => (j === i ? { ...x, op: '==', value: e.target.value } : x)))}
+                    >
+                      <option value="yes">yes</option>
+                      <option value="no">no</option>
+                    </select>
+                  ) : (
+                    <>
+                      <select
+                        className="rounded-lg border border-[color:var(--card-border)] bg-background/60 px-2 py-1.5 text-sm text-foreground"
+                        value={r.op}
+                        onChange={(e) => setRules(rules.map((x, j) => (j === i ? { ...x, op: e.target.value } : x)))}
+                      >
+                        <option value=">=">at least (≥)</option>
+                        <option value="<=">at most (≤)</option>
+                        <option value=">">greater than (&gt;)</option>
+                        <option value="<">less than (&lt;)</option>
+                        <option value="==">exactly (=)</option>
+                      </select>
+                      <input
+                        type="number"
+                        className="w-20 rounded-lg border border-[color:var(--card-border)] bg-background/60 px-2 py-1.5 text-sm text-foreground"
+                        value={r.value}
+                        onChange={(e) => setRules(rules.map((x, j) => (j === i ? { ...x, value: e.target.value } : x)))}
+                      />
+                    </>
+                  )}
+
+                  <span className="text-sm text-muted-foreground">→ escalate to</span>
+                  <select
+                    className="rounded-lg border border-[color:var(--card-border)] bg-background/60 px-2 py-1.5 text-sm text-foreground"
+                    value={r.then_level}
+                    onChange={(e) => setRules(rules.map((x, j) => (j === i ? { ...x, then_level: Number(e.target.value) as 1 | 2 | 3 } : x)))}
+                  >
+                    <option value={1}>Level 1 (note)</option>
+                    <option value={2}>Level 2 (contact)</option>
+                    <option value={3}>Level 3 (urgent)</option>
+                  </select>
+                </div>
               </div>
             ))}
           </div>

@@ -62,6 +62,46 @@ export async function getPatientByToken(
   return { id: data.id, name: data.name, language: data.language };
 }
 
+export interface ScheduleItem {
+  time: string; // HH:MM
+  label: string;
+  type: 'confirm' | 'coach' | 'checkin';
+}
+
+/** Active plan tasks as {time,label,type}, sorted — for the client auto-reminder. */
+export async function getPatientSchedule(
+  patientId: string,
+): Promise<ScheduleItem[]> {
+  const db = getSupabaseServer();
+  if (!db) return [];
+  const { data: plan } = await db
+    .from('care_plans')
+    .select('id')
+    .eq('patient_id', patientId)
+    .eq('status', 'active')
+    .maybeSingle();
+  if (!plan?.id) return [];
+  const { data: rows } = await db
+    .from('plan_tasks')
+    .select('type, time, config, sort_order')
+    .eq('plan_id', plan.id)
+    .order('sort_order', { ascending: true });
+  return ((rows ?? []) as {
+    type: 'confirm' | 'coach' | 'checkin';
+    time: string;
+    config: Record<string, unknown>;
+  }[]).map((r) => ({
+    time: r.time,
+    type: r.type,
+    label:
+      r.type === 'confirm'
+        ? String(r.config.text ?? 'your task')
+        : r.type === 'coach'
+          ? 'your step-by-step task'
+          : 'your check-in',
+  }));
+}
+
 type TaskRow = {
   block_key: string;
   type: 'confirm' | 'coach' | 'checkin';
@@ -78,9 +118,17 @@ type RuleRow = {
 
 function rowToBlock(row: TaskRow): Block {
   const base = { id: row.block_key, time: row.time };
+  const instructions = String(row.config.instructions ?? '') || undefined;
+  const precautions = String(row.config.precautions ?? '') || undefined;
   switch (row.type) {
     case 'confirm':
-      return { ...base, type: 'confirm', text: String(row.config.text ?? '') };
+      return {
+        ...base,
+        type: 'confirm',
+        text: String(row.config.text ?? ''),
+        ...(instructions ? { instructions } : {}),
+        ...(precautions ? { precautions } : {}),
+      } as Block;
     case 'coach':
       return {
         ...base,
@@ -89,7 +137,9 @@ function rowToBlock(row: TaskRow): Block {
           ? (row.config.steps as string[])
           : [],
         needs_helper: Boolean(row.config.needs_helper),
-      };
+        ...(instructions ? { instructions } : {}),
+        ...(precautions ? { precautions } : {}),
+      } as Block;
     case 'checkin':
       return {
         ...base,
@@ -116,7 +166,7 @@ export async function getActivePlan(
 
   const { data: planRow, error: planErr } = await db
     .from('care_plans')
-    .select('id, no_response')
+    .select('id, no_response, descriptive_warnings')
     .eq('patient_id', patientId)
     .eq('status', 'active')
     .order('created_at', { ascending: false })
@@ -137,13 +187,25 @@ export async function getActivePlan(
         .select('conditions, then_level, sort_order')
         .eq('plan_id', planRow.id)
         .order('sort_order', { ascending: true }),
-      db.from('contacts').select('name').eq('patient_id', patientId),
+      db
+        .from('emergency_contacts')
+        .select('name')
+        .eq('patient_id', patientId),
     ]);
+
+  // Pull the richer professional-entered fields for grounding.
+  const { data: extra } = await db
+    .from('patients')
+    .select('illnesses, general_instructions')
+    .eq('id', patientId)
+    .maybeSingle();
 
   const patientInfo: PatientInfo = {
     name: patient.name,
     language: patient.language,
     contacts: (contactRows ?? []).map((c: { name: string }) => c.name),
+    illnesses: extra?.illnesses ?? undefined,
+    generalInstructions: extra?.general_instructions ?? undefined,
   };
 
   const tasks: Block[] = ((taskRows ?? []) as TaskRow[]).map(rowToBlock);
@@ -153,7 +215,13 @@ export async function getActivePlan(
   }));
   const no_response = planRow.no_response as NoResponseConfig;
 
-  const plan: CarePlan = { patient: patientInfo, tasks, rules, no_response };
+  const plan: CarePlan = {
+    patient: patientInfo,
+    tasks,
+    rules,
+    no_response,
+    descriptiveWarnings: planRow.descriptive_warnings ?? undefined,
+  };
   return { planId: planRow.id, plan };
 }
 
@@ -236,6 +304,82 @@ export async function endSession(
     .eq('id', sessionId);
 }
 
+/** Local date (Asia/Manila) as YYYY-MM-DD. */
+function manilaDate(): string {
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Manila',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).format(new Date());
+}
+
+/**
+ * Record that a task was confirmed done today (date + exact timestamp).
+ * Idempotent per (patient, task, day) via the unique constraint — a repeated
+ * confirmation just updates done_at.
+ */
+export async function logTaskCompletion(params: {
+  patientId?: string;
+  planId?: string;
+  sessionId?: string;
+  blockKey: string;
+}): Promise<void> {
+  const db = getSupabaseServer();
+  if (!db || !params.patientId) return;
+
+  await db.from('task_completions').upsert(
+    {
+      patient_id: params.patientId,
+      plan_id: params.planId ?? null,
+      session_id: params.sessionId ?? null,
+      block_key: params.blockKey,
+      done_date: manilaDate(),
+      done_at: new Date().toISOString(),
+    },
+    { onConflict: 'patient_id,block_key,done_date' },
+  );
+}
+
+export interface CompletionRecord {
+  blockKey: string;
+  doneAt: string;
+}
+
+/** Today's completed tasks for a patient (Asia/Manila day). */
+export async function getTodaysCompletions(
+  patientId: string,
+): Promise<CompletionRecord[]> {
+  const db = getSupabaseServer();
+  if (!db) return [];
+  const { data } = await db
+    .from('task_completions')
+    .select('block_key, done_at')
+    .eq('patient_id', patientId)
+    .eq('done_date', manilaDate());
+  return (data ?? []).map((r: { block_key: string; done_at: string }) => ({
+    blockKey: r.block_key,
+    doneAt: r.done_at,
+  }));
+}
+
+/** Resolve the patient id + plan id for a session (for completion logging). */
+export async function getSessionPatientPlan(
+  sessionId: string,
+): Promise<{ patientId?: string; planId?: string }> {
+  const db = getSupabaseServer();
+  if (!db) return {};
+  const { data } = await db
+    .from('sessions')
+    .select('patient_id, plan_id')
+    .eq('id', sessionId)
+    .maybeSingle();
+  return {
+    patientId: data?.patient_id ?? undefined,
+    planId: data?.plan_id ?? undefined,
+  };
+}
+
 /** The validated answers recorded so far for a session, as an Answers map. */
 export async function getSessionAnswers(
   sessionId: string,
@@ -295,6 +439,11 @@ export interface SessionQuestion {
   type: AnswerType;
 }
 
+export interface SessionConfirmable {
+  blockKey: string;
+  label: string; // the task text / description used to match the "done?" turn
+}
+
 /**
  * The check-in questions for a session's plan: { key, ask, type }.
  * Used to map an agent's spoken question back to the field it belongs to.
@@ -327,6 +476,38 @@ export async function getSessionQuestions(
     }
   }
   return questions;
+}
+
+/**
+ * Confirm/coach ("Reminder"/"Instructional") tasks for a session's plan, with
+ * the text used to match a "did you do it?" turn so completion can be logged.
+ */
+export async function getSessionConfirmables(
+  sessionId: string,
+): Promise<SessionConfirmable[]> {
+  const db = getSupabaseServer();
+  if (!db) return [];
+
+  const planId = await getSessionPlanId(sessionId);
+  if (!planId) return [];
+
+  const { data: taskRows } = await db
+    .from('plan_tasks')
+    .select('block_key, type, config')
+    .eq('plan_id', planId)
+    .in('type', ['confirm', 'coach']);
+
+  return ((taskRows ?? []) as {
+    block_key: string;
+    type: string;
+    config: Record<string, unknown>;
+  }[]).map((r) => ({
+    blockKey: r.block_key,
+    label:
+      r.type === 'confirm'
+        ? String(r.config.text ?? '')
+        : 'instructional task',
+  }));
 }
 
 // Answers are stored as text; turn them back into AnswerValue for the engine.

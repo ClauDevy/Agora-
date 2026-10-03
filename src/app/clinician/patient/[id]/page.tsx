@@ -3,7 +3,7 @@
 
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { getPatient, getActivePlan } from "@/lib/data";
+import { getPatient, getActivePlan, getTodaysCompletions } from "@/lib/data";
 import { getSupabaseServer } from "@/lib/supabase";
 import { validatePlan } from "@/core/validate-plan";
 import { PatientLinkPanel } from "@/components/PatientLinkPanel";
@@ -21,6 +21,12 @@ function blockSummary(block: Block): string {
       return `${(block as CheckinBlock).questions.length} questions`;
   }
 }
+
+const TYPE_LABEL: Record<string, string> = {
+  confirm: "Reminder",
+  coach: "Instructional",
+  checkin: "Check-in",
+};
 
 export default async function PatientDetailPage({
   params,
@@ -47,6 +53,10 @@ export default async function PatientDetailPage({
   const plan = loaded?.plan ?? null;
   const validation = plan ? validatePlan(plan) : null;
 
+  // Which tasks are already done today (Asia/Manila).
+  const completions = await getTodaysCompletions(id);
+  const doneMap = new Map(completions.map((c) => [c.blockKey, c.doneAt]));
+
   return (
     <main className="mx-auto w-full max-w-3xl px-4 py-8 sm:px-6">
       <Link
@@ -55,12 +65,22 @@ export default async function PatientDetailPage({
       >
         ← Patients
       </Link>
-      <h1 className="mt-2 text-3xl font-bold tracking-tight text-foreground">
-        {patient.name}
-      </h1>
-      <p className="mt-1 text-sm text-muted-foreground">
-        Language: {patient.language}
-      </p>
+      <div className="mt-2 flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h1 className="text-3xl font-bold tracking-tight text-foreground">
+            {patient.name}
+          </h1>
+          <p className="mt-1 text-sm text-muted-foreground">
+            Language: {patient.language}
+          </p>
+        </div>
+        <Link
+          href={`/clinician/patient/${id}/edit`}
+          className="rounded-lg bg-[color:var(--primary)] px-5 py-2.5 font-semibold text-[color:var(--primary-foreground)] transition hover:opacity-90"
+        >
+          Edit patient
+        </Link>
+      </div>
 
       {token && (
         <div className="mt-6">
@@ -75,24 +95,36 @@ export default async function PatientDetailPage({
               Care-plan tasks
             </h2>
             <ul className="mt-3 divide-y divide-[color:var(--card-border)]">
-              {plan.tasks.map((task) => (
+              {plan.tasks.map((task) => {
+                const doneAt = doneMap.get(task.id);
+                return (
                 <li
                   key={task.id}
                   className="flex items-center justify-between py-3 text-sm"
                 >
                   <span className="flex items-center gap-3">
                     <span className="rounded bg-[color:var(--primary)]/15 px-2 py-0.5 font-mono text-xs text-[color:var(--primary)]">
-                      {task.type}
+                      {TYPE_LABEL[task.type] ?? task.type}
                     </span>
                     <span className="text-foreground">
                       {blockSummary(task)}
                     </span>
+                    {doneAt && (
+                      <span className="rounded bg-[color:var(--success)]/20 px-2 py-0.5 text-xs font-semibold text-[color:var(--success)]">
+                        ✓ Done{" "}
+                        {new Date(doneAt).toLocaleTimeString([], {
+                          hour: "numeric",
+                          minute: "2-digit",
+                        })}
+                      </span>
+                    )}
                   </span>
                   <span className="font-mono text-muted-foreground">
                     {task.time}
                   </span>
                 </li>
-              ))}
+                );
+              })}
             </ul>
           </section>
 

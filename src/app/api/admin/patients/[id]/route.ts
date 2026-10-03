@@ -1,10 +1,12 @@
-// Admin patients API. GET lists patients; POST creates a patient + plan.
-// Admin-guarded. Inputs validated with zod (AGENTS.md section 12).
+// Per-patient admin API: GET loads full editable data; PUT updates patient +
+// replaces plan contacts/tasks/rules. Admin-guarded, zod-validated.
 
 import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
 import { isAdmin } from '@/lib/admin-auth';
-import { createPatientWithPlan, listPatients } from '@/lib/admin-data';
+import { getPatientForEdit, updatePatientWithPlan } from '@/lib/admin-data';
+
+const timeRe = /^([01]\d|2[0-3]):[0-5]\d$/;
 
 const contactSchema = z.object({
   name: z.string().min(1),
@@ -12,15 +14,11 @@ const contactSchema = z.object({
   phone: z.string().min(1),
   priority: z.number().int().min(1).optional(),
 });
-
 const questionSchema = z.object({
   key: z.string().min(1),
   ask: z.string().min(1),
   type: z.enum(['yes_no', 'number']),
 });
-
-const timeRe = /^([01]\d|2[0-3]):[0-5]\d$/;
-
 const taskSchema = z
   .object({
     type: z.enum(['confirm', 'coach', 'checkin']),
@@ -34,13 +32,12 @@ const taskSchema = z
   })
   .superRefine((t, ctx) => {
     if (t.type === 'confirm' && !t.text?.trim())
-      ctx.addIssue({ code: 'custom', message: 'confirm task needs text' });
+      ctx.addIssue({ code: 'custom', message: 'reminder task needs text' });
     if (t.type === 'coach' && !(t.steps && t.steps.length))
-      ctx.addIssue({ code: 'custom', message: 'coach task needs steps' });
+      ctx.addIssue({ code: 'custom', message: 'instructional task needs steps' });
     if (t.type === 'checkin' && !(t.questions && t.questions.length))
-      ctx.addIssue({ code: 'custom', message: 'checkin task needs questions' });
+      ctx.addIssue({ code: 'custom', message: 'check-in needs questions' });
   });
-
 const ruleSchema = z.object({
   conditions: z
     .array(
@@ -55,7 +52,6 @@ const ruleSchema = z.object({
   label: z.string().optional(),
   patient_message: z.string().optional(),
 });
-
 const patientSchema = z.object({
   name: z.string().min(1),
   address: z.string().optional(),
@@ -69,28 +65,31 @@ const patientSchema = z.object({
   tasks: z.array(taskSchema).min(1, 'add at least one care-plan task'),
   rules: z.array(ruleSchema).default([]),
   descriptive_warnings: z.string().optional(),
-  no_response: z
-    .object({
-      retries: z.number().int().min(0),
-      gap_minutes: z.number().positive(),
-      then: z.union([z.literal(1), z.literal(2), z.literal(3)]),
-    })
-    .optional(),
 });
 
-export async function GET() {
+export async function GET(
+  _request: NextRequest,
+  { params }: { params: Promise<{ id: string }> },
+) {
   if (!(await isAdmin())) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
-  const patients = await listPatients();
-  return NextResponse.json({ patients });
+  const { id } = await params;
+  const patient = await getPatientForEdit(id);
+  if (!patient) {
+    return NextResponse.json({ error: 'Not found' }, { status: 404 });
+  }
+  return NextResponse.json({ patient });
 }
 
-export async function POST(request: NextRequest) {
+export async function PUT(
+  request: NextRequest,
+  { params }: { params: Promise<{ id: string }> },
+) {
   if (!(await isAdmin())) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
-
+  const { id } = await params;
   const json = await request.json().catch(() => null);
   const parsed = patientSchema.safeParse(json);
   if (!parsed.success) {
@@ -99,14 +98,12 @@ export async function POST(request: NextRequest) {
       { status: 400 },
     );
   }
-
-  const result = await createPatientWithPlan(parsed.data);
-  if (!result) {
+  const ok = await updatePatientWithPlan(id, parsed.data);
+  if (!ok) {
     return NextResponse.json(
-      { error: 'Failed to create patient (database unavailable?)' },
+      { error: 'Failed to update patient' },
       { status: 500 },
     );
   }
-
-  return NextResponse.json(result, { status: 201 });
+  return NextResponse.json({ ok: true });
 }

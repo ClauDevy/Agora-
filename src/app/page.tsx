@@ -11,8 +11,8 @@ export default function Home() {
           AlalAI
         </h1>
         <p className="mt-3 text-lg text-muted-foreground">
-          A voice-first care assistant for older adults at home. A clinician
-          writes the care plan; the patient just talks.
+          A voice-first care assistant for older adults at home. A healthcare
+          professional writes the care plan; the patient just talks.
         </p>
 
         <div className="mt-8 flex flex-col gap-3 sm:flex-row sm:justify-center">
@@ -20,7 +20,7 @@ export default function Home() {
             href="/clinician"
             className="rounded-lg bg-[color:var(--primary)] px-6 py-3 font-semibold text-[color:var(--primary-foreground)] transition hover:opacity-90"
           >
-            I&apos;m a clinician
+            I&apos;m a professional
           </Link>
           <Link
             href="/clinician/logs"

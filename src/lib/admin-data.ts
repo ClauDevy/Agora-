@@ -45,6 +45,7 @@ export interface NewPatientInput {
   name: string;
   address?: string;
   language?: string;
+  illnesses?: string;
   general_instructions?: string;
   hospital_name?: string;
   hospital_phone?: string;
@@ -52,6 +53,7 @@ export interface NewPatientInput {
   contacts: NewContact[];
   tasks: NewTask[];
   rules: NewRule[];
+  descriptive_warnings?: string;
   no_response?: { retries: number; gap_minutes: number; then: 1 | 2 | 3 };
 }
 
@@ -149,6 +151,7 @@ export async function createPatientWithPlan(
       name: input.name,
       address: input.address ?? null,
       language: input.language ?? 'en',
+      illnesses: input.illnesses ?? null,
       general_instructions: input.general_instructions ?? null,
       hospital_name: input.hospital_name ?? null,
       hospital_phone: input.hospital_phone ?? null,
@@ -174,6 +177,7 @@ export async function createPatientWithPlan(
         gap_minutes: 5,
         then: 2,
       },
+      descriptive_warnings: input.descriptive_warnings ?? null,
     })
     .select('id')
     .single();
@@ -223,4 +227,216 @@ export async function createPatientWithPlan(
   }
 
   return { id: patientId, token };
+}
+
+// ---------------------------------------------------------------------------
+// Edit (load full + update)
+// ---------------------------------------------------------------------------
+
+export interface EditablePatient {
+  id: string;
+  name: string;
+  address: string;
+  language: string;
+  illnesses: string;
+  general_instructions: string;
+  hospital_name: string;
+  hospital_phone: string;
+  emergency_number: string;
+  descriptive_warnings: string;
+  contacts: NewContact[];
+  tasks: NewTask[];
+  rules: NewRule[];
+}
+
+/** Load a patient's full editable data (patient + active plan + contacts). */
+export async function getPatientForEdit(
+  patientId: string,
+): Promise<EditablePatient | null> {
+  const db = getSupabaseServer();
+  if (!db) return null;
+
+  const { data: p } = await db
+    .from('patients')
+    .select(
+      'id, name, address, language, illnesses, general_instructions, hospital_name, hospital_phone, emergency_number',
+    )
+    .eq('id', patientId)
+    .maybeSingle();
+  if (!p) return null;
+
+  const { data: plan } = await db
+    .from('care_plans')
+    .select('id, descriptive_warnings')
+    .eq('patient_id', patientId)
+    .eq('status', 'active')
+    .maybeSingle();
+
+  const [{ data: contactRows }, taskRes, ruleRes] = await Promise.all([
+    db
+      .from('emergency_contacts')
+      .select('name, relationship, phone, priority')
+      .eq('patient_id', patientId)
+      .order('priority', { ascending: true }),
+    plan?.id
+      ? db
+          .from('plan_tasks')
+          .select('type, time, config, sort_order')
+          .eq('plan_id', plan.id)
+          .order('sort_order', { ascending: true })
+      : Promise.resolve({ data: [] as unknown[] }),
+    plan?.id
+      ? db
+          .from('plan_rules')
+          .select('conditions, then_level, sort_order')
+          .eq('plan_id', plan.id)
+          .order('sort_order', { ascending: true })
+      : Promise.resolve({ data: [] as unknown[] }),
+  ]);
+
+  const tasks: NewTask[] = ((taskRes.data ?? []) as {
+    type: 'confirm' | 'coach' | 'checkin';
+    time: string;
+    config: Record<string, unknown>;
+  }[]).map((t) => ({
+    type: t.type,
+    time: t.time,
+    text: String(t.config.text ?? '') || undefined,
+    instructions: String(t.config.instructions ?? '') || undefined,
+    precautions: String(t.config.precautions ?? '') || undefined,
+    steps: Array.isArray(t.config.steps) ? (t.config.steps as string[]) : undefined,
+    needs_helper: Boolean(t.config.needs_helper),
+    questions: Array.isArray(t.config.questions)
+      ? (t.config.questions as NewCheckinQuestion[])
+      : undefined,
+  }));
+
+  const rules: NewRule[] = ((ruleRes.data ?? []) as {
+    conditions: NewRule['conditions'];
+    then_level: 1 | 2 | 3;
+  }[]).map((r) => ({ conditions: r.conditions, then_level: r.then_level }));
+
+  return {
+    id: p.id,
+    name: p.name,
+    address: p.address ?? '',
+    language: p.language ?? 'en',
+    illnesses: p.illnesses ?? '',
+    general_instructions: p.general_instructions ?? '',
+    hospital_name: p.hospital_name ?? '',
+    hospital_phone: p.hospital_phone ?? '',
+    emergency_number: p.emergency_number ?? '',
+    descriptive_warnings: plan?.descriptive_warnings ?? '',
+    contacts: (contactRows ?? []) as NewContact[],
+    tasks,
+    rules,
+  };
+}
+
+/**
+ * Update a patient's details and REPLACE their active plan's contacts, tasks,
+ * and rules with the provided set. Simple replace-all keeps the editor logic
+ * predictable for the demo.
+ */
+export async function updatePatientWithPlan(
+  patientId: string,
+  input: NewPatientInput,
+): Promise<boolean> {
+  const db = getSupabaseServer();
+  if (!db) return false;
+
+  // 1. Update patient fields.
+  const { error: pErr } = await db
+    .from('patients')
+    .update({
+      name: input.name,
+      address: input.address ?? null,
+      language: input.language ?? 'en',
+      illnesses: input.illnesses ?? null,
+      general_instructions: input.general_instructions ?? null,
+      hospital_name: input.hospital_name ?? null,
+      hospital_phone: input.hospital_phone ?? null,
+      emergency_number: input.emergency_number ?? '',
+    })
+    .eq('id', patientId);
+  if (pErr) {
+    console.error('updatePatient error:', pErr.message);
+    return false;
+  }
+
+  // 2. Find (or create) the active plan.
+  let planId: string | null = null;
+  const { data: existingPlan } = await db
+    .from('care_plans')
+    .select('id')
+    .eq('patient_id', patientId)
+    .eq('status', 'active')
+    .maybeSingle();
+  if (existingPlan?.id) {
+    planId = existingPlan.id;
+    await db
+      .from('care_plans')
+      .update({
+        no_response: input.no_response ?? { retries: 2, gap_minutes: 5, then: 2 },
+        descriptive_warnings: input.descriptive_warnings ?? null,
+      })
+      .eq('id', planId);
+  } else {
+    const { data: created } = await db
+      .from('care_plans')
+      .insert({
+        patient_id: patientId,
+        status: 'active',
+        no_response: input.no_response ?? { retries: 2, gap_minutes: 5, then: 2 },
+        descriptive_warnings: input.descriptive_warnings ?? null,
+      })
+      .select('id')
+      .single();
+    planId = created?.id ?? null;
+  }
+  if (!planId) return false;
+
+  // 3. Replace contacts.
+  await db.from('emergency_contacts').delete().eq('patient_id', patientId);
+  if (input.contacts.length) {
+    await db.from('emergency_contacts').insert(
+      input.contacts.map((c, i) => ({
+        patient_id: patientId,
+        name: c.name,
+        relationship: c.relationship ?? null,
+        phone: c.phone,
+        priority: c.priority ?? i + 1,
+      })),
+    );
+  }
+
+  // 4. Replace tasks.
+  await db.from('plan_tasks').delete().eq('plan_id', planId);
+  if (input.tasks.length) {
+    await db.from('plan_tasks').insert(
+      input.tasks.map((t, i) => ({
+        plan_id: planId,
+        block_key: `t${i + 1}`,
+        type: t.type,
+        time: t.time,
+        sort_order: i,
+        config: taskConfig(t),
+      })),
+    );
+  }
+
+  // 5. Replace rules.
+  await db.from('plan_rules').delete().eq('plan_id', planId);
+  if (input.rules.length) {
+    await db.from('plan_rules').insert(
+      input.rules.map((r, i) => ({
+        plan_id: planId,
+        conditions: r.conditions,
+        then_level: r.then_level,
+        sort_order: i,
+      })),
+    );
+  }
+
+  return true;
 }

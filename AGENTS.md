@@ -440,3 +440,13 @@ Never cut: Agora voice, rules engine, tap-to-call escalation, no-response alert,
 9. **Sustainability & growth** — hypothesis: clinics/discharge programs and barangay health programs as customers; same engine for other prescribed home-care routines. State as hypothesis, not fact.
 10. **Run it locally** + env vars + demo script
 11. **Links**: video, live URL
+
+<!-- BEGIN:nextjs-agent-rules -->
+
+# This is NOT the Next.js you know
+
+This version has breaking changes — APIs, conventions, and file structure may all differ from your training data. Read the relevant guide in `node_modules/next/dist/docs/` (resolved from this file's directory; in monorepos the `next` package may not be visible from the repo root) before writing any code. Heed deprecation notices.
+
+This block is written and re-added by `next dev` — verify at `node_modules/next/dist/server/lib/generate-agent-files.js`. Removing it from a diff only re-creates the uncommitted change; committing it with your work keeps the tree clean.
+
+<!-- END:nextjs-agent-rules -->
