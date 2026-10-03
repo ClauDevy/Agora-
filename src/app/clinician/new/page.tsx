@@ -86,6 +86,16 @@ export function normalizeTime(raw: string): string {
   return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
 }
 
+// Pretty 12-hour label for a 24h HH:MM (e.g. "16:20" -> "4:20 PM").
+function to12h(hhmm: string): string {
+  const m = /^([01]?\d|2[0-3]):([0-5]\d)$/.exec(hhmm.trim());
+  if (!m) return '';
+  let h = Number(m[1]);
+  const ampm = h >= 12 ? 'PM' : 'AM';
+  h = h % 12 || 12;
+  return `${h}:${m[2]} ${ampm}`;
+}
+
 export default function NewPatientPage() {
   const [name, setName] = useState('');
   const [address, setAddress] = useState('');
@@ -364,6 +374,11 @@ export default function NewPatientPage() {
                       onChange={(e) => updateTask(i, { time: e.target.value })}
                       onBlur={(e) => updateTask(i, { time: normalizeTime(e.target.value) })}
                     />
+                    {to12h(normalizeTime(t.time)) && (
+                      <span className="mt-1 block text-xs text-[color:var(--primary)]">
+                        {to12h(normalizeTime(t.time))}
+                      </span>
+                    )}
                     <div className="mt-2 flex flex-wrap gap-1.5">
                       {TIME_PRESETS.map((preset) => (
                         <button

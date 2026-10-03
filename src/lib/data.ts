@@ -66,6 +66,7 @@ export interface ScheduleItem {
   time: string; // HH:MM
   label: string;
   type: 'confirm' | 'coach' | 'checkin';
+  blockKey: string;
 }
 
 /** Active plan tasks as {time,label,type}, sorted — for the client auto-reminder. */
@@ -83,16 +84,18 @@ export async function getPatientSchedule(
   if (!plan?.id) return [];
   const { data: rows } = await db
     .from('plan_tasks')
-    .select('type, time, config, sort_order')
+    .select('type, time, config, sort_order, block_key')
     .eq('plan_id', plan.id)
     .order('sort_order', { ascending: true });
   return ((rows ?? []) as {
     type: 'confirm' | 'coach' | 'checkin';
     time: string;
+    block_key: string;
     config: Record<string, unknown>;
   }[]).map((r) => ({
     time: r.time,
     type: r.type,
+    blockKey: r.block_key,
     label:
       r.type === 'confirm'
         ? String(r.config.text ?? 'your task')
@@ -356,7 +359,8 @@ export async function getTodaysCompletions(
     .from('task_completions')
     .select('block_key, done_at')
     .eq('patient_id', patientId)
-    .eq('done_date', manilaDate());
+    .eq('done_date', manilaDate())
+    .not('done_at', 'is', null);
   return (data ?? []).map((r: { block_key: string; done_at: string }) => ({
     blockKey: r.block_key,
     doneAt: r.done_at,

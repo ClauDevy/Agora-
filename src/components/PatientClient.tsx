@@ -17,6 +17,7 @@ import type {
   ClientStartRequest,
   AgentResponse,
 } from '@/types/conversation';
+import { acquireRtm } from '@/lib/rtm-manager';
 
 // Browser-only call component.
 const VoiceSession = dynamic(() => import('./VoiceSession'), { ssr: false });
@@ -59,7 +60,7 @@ export default function PatientClient({
 }: {
   patientId?: string;
   patientName?: string;
-  schedule?: { time: string; label: string; type: string }[];
+  schedule?: { time: string; label: string; type: string; blockKey?: string }[];
 } = {}) {
   const [showConversation, setShowConversation] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
@@ -95,8 +96,16 @@ export default function PatientClient({
             undefined
           : undefined);
 
-      // 1. Fetch RTC+RTM token + channel.
-      const agoraResponse = await fetch('/api/generate-agora-token');
+      // 1. Fetch RTC+RTM token + channel. Use a STABLE uid per browser so the
+      // RTM client can be reused across start/stop (fewer SDK constructions).
+      let stableUid = sessionStorage.getItem('alalai_uid');
+      if (!stableUid) {
+        stableUid = String(Math.floor(Math.random() * 9_999_000) + 1000);
+        sessionStorage.setItem('alalai_uid', stableUid);
+      }
+      const agoraResponse = await fetch(
+        `/api/generate-agora-token?uid=${stableUid}`,
+      );
       const responseData = await agoraResponse.json();
       if (!agoraResponse.ok) {
         throw new Error(
@@ -125,23 +134,14 @@ export default function PatientClient({
           }),
 
         (async () => {
-          const { default: AgoraRTM } = await import('agora-rtm');
-          // If a previous RTM client exists (e.g. restart or StrictMode remount),
-          // log it out first so we never have two live instances for one uid.
-          if (rtmRef.current) {
-            try {
-              await rtmRef.current.logout();
-            } catch {
-              /* ignore */
-            }
-            rtmRef.current = null;
-          }
-          const client: RTMClient = new AgoraRTM.RTM(
-            process.env.NEXT_PUBLIC_AGORA_APP_ID!,
-            responseData.uid,
-          );
-          await client.login({ token: responseData.token });
-          await client.subscribe(responseData.channel);
+          // Single-instance RTM via the module-level manager (prevents the
+          // "Ins id / mutual kick" warning from multiple live clients).
+          const client = await acquireRtm({
+            appId: process.env.NEXT_PUBLIC_AGORA_APP_ID!,
+            uid: responseData.uid,
+            token: responseData.token,
+            channel: responseData.channel,
+          });
           rtmRef.current = client;
           return client;
         })(),
@@ -179,8 +179,10 @@ export default function PatientClient({
         console.error('Error stopping agent:', error);
       }
     }
-    const client = rtmRef.current ?? rtmClient;
-    client?.logout().catch((err) => console.error('RTM logout error:', err));
+    // Keep the RTM client alive (logged in) for reuse on the next start — this
+    // avoids constructing a new AgoraRTM.RTM each session. The singleton manager
+    // re-subscribes the same client to the new channel. (releaseRtm is only used
+    // when the uid changes or on full teardown.)
     rtmRef.current = null;
     setRtmClient(null);
     setAgoraData(null);
@@ -201,6 +203,7 @@ export default function PatientClient({
             agoraData={agoraData}
             rtmClient={rtmClient}
             schedule={schedule}
+            patientId={patientIdProp}
             onEnd={handleEnd}
           />
         </AgoraProvider>

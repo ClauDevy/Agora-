@@ -85,7 +85,9 @@ export default async function LogsPage() {
       ) : (
         <ul className="space-y-4">
           {taskStatus.map((p) => {
-            const doneCount = p.tasks.filter((t) => t.done).length;
+            const doneCount = p.tasks.filter(
+              (t) => t.status === "done" || t.status === "late",
+            ).length;
             return (
               <li
                 key={p.patientId}
@@ -114,7 +116,7 @@ export default async function LogsPage() {
                         </span>
                         <span className="text-foreground">{t.label}</span>
                       </span>
-                      {t.done ? (
+                      {t.status === "done" ? (
                         <span className="rounded bg-[color:var(--success)]/20 px-2 py-0.5 text-xs font-semibold text-[color:var(--success)]">
                           ✓ Done
                           {t.doneAt
@@ -124,6 +126,14 @@ export default async function LogsPage() {
                                 minute: "2-digit",
                               })
                             : ""}
+                        </span>
+                      ) : t.status === "late" ? (
+                        <span className="rounded bg-amber-500/20 px-2 py-0.5 text-xs font-semibold text-amber-300">
+                          ⏰ Done late
+                        </span>
+                      ) : t.status === "no_response" ? (
+                        <span className="rounded bg-rose-500/20 px-2 py-0.5 text-xs font-semibold text-rose-300">
+                          ✕ Didn&apos;t respond
                         </span>
                       ) : (
                         <span className="rounded bg-slate-500/20 px-2 py-0.5 text-xs font-semibold text-slate-300">

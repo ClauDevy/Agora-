@@ -44,7 +44,8 @@ interface VoiceSessionProps {
   agoraData: AgoraTokenData;
   rtmClient: RTMClient;
   onEnd: () => void;
-  schedule?: { time: string; label: string; type: string }[];
+  schedule?: { time: string; label: string; type: string; blockKey?: string }[];
+  patientId?: string;
 }
 
 // Patient-facing status, derived from agent + connection state.
@@ -55,6 +56,7 @@ export default function VoiceSession({
   rtmClient,
   onEnd,
   schedule = [],
+  patientId,
 }: VoiceSessionProps) {
   const client = useRTCClient();
   const remoteUsers = useRemoteUsers();
@@ -63,6 +65,27 @@ export default function VoiceSession({
   const [isAgentConnected, setIsAgentConnected] = useState(false);
   const [connectionState, setConnectionState] = useState<string>('CONNECTING');
   const [agentState, setAgentState] = useState<AgentState | null>(null);
+  // Live device clock for the patient view (updates every second).
+  const [clock, setClock] = useState<string>('');
+  // True while a scheduled reminder is actively being delivered.
+  const [reminding, setReminding] = useState(false);
+  // Text of the current on-screen reminder banner (null = hidden).
+  const [reminderBanner, setReminderBanner] = useState<string | null>(null);
+  useEffect(() => {
+    const tick = () => {
+      const d = new Date();
+      setClock(
+        d.toLocaleTimeString([], {
+          hour: 'numeric',
+          minute: '2-digit',
+          second: '2-digit',
+        }),
+      );
+    };
+    tick();
+    const id = setInterval(tick, 1000);
+    return () => clearInterval(id);
+  }, []);
 
   // Track which patient turns we've already scored (de-dupe) and the agent's
   // most recent question text, so each answer is attributed to the right field.
@@ -70,8 +93,10 @@ export default function VoiceSession({
   const sessionId = agoraData.sessionId;
   // Reference to the live AgoraVoiceAI instance (for proactive sendText reminders).
   const aiRef = useRef<InstanceType<typeof AgoraVoiceAI> | null>(null);
-  // Task times already announced this session (avoid repeat reminders).
-  const firedTimes = useRef<Set<string>>(new Set());
+  // Per-task reminder state: attempts made, minute of last reminder, finished.
+  const reminderState = useRef<
+    Record<string, { attempts: number; lastMin: number; finished: boolean }>
+  >({});
 
   // StrictMode guard (from quickstart): delay useJoin's ready flag past the
   // fake-unmount cycle so the channel is joined exactly once.
@@ -241,57 +266,160 @@ export default function VoiceSession({
     setConnectionState(curState);
   });
 
-  // --- Auto-reminder scheduler -------------------------------------------
-  // While the session is open, check the DEVICE's local time every 5s. A task
-  // is "due" when the current time is at or past its scheduled time (same day).
-  // When a task becomes due and hasn't been announced yet this session, tell the
-  // agent via sendText so it leaves standby and runs that task. Firing on ">="
-  // (not exact-minute equality) means a reminder still happens even if the exact
-  // minute tick was missed or the time already passed when the session started.
-  // Only works while the page is open (browsers can't wake a closed page).
-  useEffect(() => {
-    if (!isAgentConnected || schedule.length === 0) return;
+  // Log a reminder outcome (late / no_response) for the professional's logs.
+  const markOutcome = useCallback(
+    (blockKey: string, kind: 'late' | 'no_response') => {
+      if (!patientId) return;
+      void fetch('/api/patient-status', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          patient_id: patientId,
+          block_key: blockKey,
+          session_id: agoraData.sessionId,
+          kind,
+        }),
+      }).catch(() => {});
+    },
+    [patientId, agoraData.sessionId],
+  );
 
-    const toMinutes = (hhmm: string) => {
+  // --- Reminder state machine --------------------------------------------
+  // While the session is open: at a task's scheduled minute, remind the patient.
+  // If they don't confirm it done, re-remind every 5 minutes, up to 3 times
+  // total. After 3 unanswered reminders -> log "didn't respond" (no_response)
+  // and stop. If they confirm AFTER the scheduled time + grace -> mark "late".
+  // Completion is detected by polling today's completed block_keys.
+  // Only runs while the page is open (browsers can't wake a closed page).
+  const RETRY_GAP_MIN = 5;
+  const MAX_ATTEMPTS = 3;
+  const LATE_GRACE_MIN = 2;
+
+  useEffect(() => {
+    if (schedule.length === 0) return;
+
+    const toMin = (hhmm: string) => {
       const [h, m] = hhmm.split(':').map(Number);
       return (h || 0) * 60 + (m || 0);
     };
 
-    const check = () => {
-      const now = new Date();
-      const nowMin = now.getHours() * 60 + now.getMinutes();
+    // Baseline minute when the session started — only remind for tasks whose
+    // time is at/after this, so opening a call doesn't replay past tasks.
+    const startNow = new Date();
+    const sessionStartMin = startNow.getHours() * 60 + startNow.getMinutes();
 
-      for (const item of schedule) {
-        if (firedTimes.current.has(item.time)) continue;
-        const taskMin = toMinutes(item.time);
-        // Due when now is at/just past the scheduled time (within a 10-min
-        // window so we don't blast reminders for times long past at startup).
-        const late = nowMin - taskMin;
-        if (late < 0 || late > 10) continue;
-
-        const ai = aiRef.current;
-        if (!ai) continue; // agent not ready yet; try again next tick (don't mark fired)
-
-        firedTimes.current.add(item.time);
-        ai
-          .sendText(agentUID, {
-            messageType: ChatMessageType.TEXT,
-            text: `IT IS NOW TIME FOR: ${item.label} (scheduled ${item.time}). It is now ${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}. Stop standby, remind the patient it is time, run this task now, then do the after-task check-in.`,
-            priority: ChatMessagePriority.INTERRUPTED,
-            responseInterruptable: true,
-          })
-          .catch((e) => {
-            console.error('auto-reminder sendText failed:', e);
-            // Allow a retry on the next tick if sending failed.
-            firedTimes.current.delete(item.time);
-          });
+    // Speak a reminder with the browser's built-in TTS (deterministic, exact,
+    // no dependency on the LLM or RTM).
+    const speak = (text: string) => {
+      try {
+        const synth = window.speechSynthesis;
+        if (!synth) return;
+        synth.cancel();
+        const u = new SpeechSynthesisUtterance(text);
+        u.rate = 0.95;
+        synth.speak(u);
+      } catch {
+        /* speech not available — the on-screen banner still shows */
       }
     };
 
-    check(); // run once immediately on connect
-    const id = setInterval(check, 5000);
+    const tick = async () => {
+      const now = new Date();
+      const nowMin = now.getHours() * 60 + now.getMinutes();
+
+      // Poll which tasks are already confirmed done today.
+      let completed: string[] = [];
+      if (patientId) {
+        try {
+          const r = await fetch(`/api/patient-status?patient=${patientId}`);
+          const b = await r.json();
+          completed = Array.isArray(b.completed) ? b.completed : [];
+        } catch {
+          /* ignore poll errors */
+        }
+      }
+
+      let anyReminding = false;
+      let activeBanner: string | null = null;
+
+      for (const item of schedule) {
+        const key = item.blockKey ?? item.time;
+        const st = reminderState.current[key] ?? {
+          attempts: 0,
+          lastMin: -Infinity,
+          finished: false,
+        };
+        reminderState.current[key] = st;
+
+        if (completed.includes(key)) {
+          if (!st.finished) {
+            st.finished = true;
+            if (st.attempts > 0 && nowMin > toMin(item.time) + LATE_GRACE_MIN) {
+              markOutcome(key, 'late');
+            }
+          }
+          continue;
+        }
+        if (st.finished) continue;
+
+        const taskMin = toMin(item.time);
+        if (nowMin < taskMin) continue; // not time yet
+        if (taskMin < sessionStartMin) {
+          // Time passed before this session started — don't nag.
+          st.finished = true;
+          continue;
+        }
+
+        const sinceLast = nowMin - st.lastMin;
+        const firstTime = st.attempts === 0;
+        if (firstTime || sinceLast >= RETRY_GAP_MIN) {
+          if (st.attempts >= MAX_ATTEMPTS) {
+            st.finished = true;
+            markOutcome(key, 'no_response');
+            continue;
+          }
+
+          st.attempts += 1;
+          st.lastMin = nowMin;
+          anyReminding = true;
+          activeBanner = `It's time for ${item.label}`;
+
+          // 1) DETERMINISTIC delivery — on-screen banner + spoken reminder.
+          const spoken =
+            st.attempts === 1
+              ? `It's time for ${item.label}. ${item.type === 'checkin' ? "Let's do your check-in." : 'Please do it now, then tell me when you are done.'}`
+              : `Reminder ${st.attempts}: it's still time for ${item.label}. Please tell me when you've done it.`;
+          speak(spoken);
+
+          // 2) BEST-EFFORT — also nudge the AI so it continues the conversation.
+          const ai = aiRef.current;
+          if (ai) {
+            ai
+              .sendText(agentUID, {
+                messageType: ChatMessageType.TEXT,
+                text: `IT IS TIME FOR: ${item.label} (scheduled ${item.time}). Reminder ${st.attempts} of ${MAX_ATTEMPTS}. Remind the patient warmly, run the task, and ask them to confirm when done.`,
+                priority: ChatMessagePriority.INTERRUPTED,
+                responseInterruptable: true,
+              })
+              .catch(() => {
+                /* non-fatal; the spoken/banner reminder already happened */
+              });
+          }
+        } else {
+          anyReminding = true;
+          activeBanner = `It's time for ${item.label}`;
+        }
+      }
+
+      setReminding(anyReminding);
+      setReminderBanner(activeBanner);
+    };
+
+    void tick(); // run immediately
+    const id = setInterval(() => void tick(), 1000); // seconds-accurate
     return () => clearInterval(id);
-  }, [isAgentConnected, schedule, agentUID]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [schedule, agentUID, patientId]);
 
   const handleEnd = useCallback(() => {
     onEnd();
@@ -329,13 +457,61 @@ export default function VoiceSession({
     speaking: 'Please listen',
   };
 
+  // High-level session status for the top chip.
+  const statusLabel = reminding
+    ? 'Reminding'
+    : display === 'connecting'
+      ? 'Connecting'
+      : display === 'speaking'
+        ? 'Talking'
+        : display === 'thinking'
+          ? 'Thinking'
+          : agentState === 'listening'
+            ? 'Listening'
+            : 'Standby';
+
+  const statusColor = reminding
+    ? 'bg-amber-500/20 text-amber-200 ring-amber-400/40'
+    : statusLabel === 'Talking'
+      ? 'bg-sky-500/20 text-sky-200 ring-sky-400/40'
+      : statusLabel === 'Listening'
+        ? 'bg-emerald-500/20 text-emerald-200 ring-emerald-400/40'
+        : 'bg-slate-500/20 text-slate-200 ring-slate-400/40';
+
   return (
-    <div className="flex min-h-dvh flex-col items-center justify-center gap-10 px-6 py-10 text-center">
+    <div className="flex min-h-dvh flex-col items-center justify-center gap-8 px-6 py-10 text-center">
+      {/* Top bar: live clock + session status */}
+      <div className="fixed inset-x-0 top-0 flex items-center justify-between px-5 py-4">
+        <span className="text-2xl font-bold tabular-nums text-foreground">
+          {clock}
+        </span>
+        <span
+          className={`rounded-full px-4 py-1.5 text-sm font-semibold ring-2 ${statusColor}`}
+          aria-live="polite"
+        >
+          {statusLabel}
+        </span>
+      </div>
+
+      {/* Big reminder banner — shows exactly when a task is due. */}
+      {reminderBanner && (
+        <div className="mt-16 w-full max-w-md rounded-[20px] border-4 border-amber-400 bg-amber-500/15 px-6 py-5 text-center shadow-[0_0_60px_rgba(245,158,11,0.4)]">
+          <p className="text-sm font-semibold uppercase tracking-wide text-amber-300">
+            Reminder
+          </p>
+          <p className="mt-1 text-3xl font-extrabold text-amber-100">
+            {reminderBanner}
+          </p>
+        </div>
+      )}
+
       {/* Pulsing status orb — large, high-contrast, no text input required. */}
       <div
         className={[
-          "flex h-60 w-60 items-center justify-center rounded-full animate-orb",
-          display === "speaking"
+          "mt-10 flex h-60 w-60 items-center justify-center rounded-full animate-orb",
+          reminding
+            ? "bg-amber-500/20 ring-8 ring-amber-400 shadow-[0_0_80px_rgba(245,158,11,0.5)]"
+            : display === "speaking"
             ? "bg-[color:var(--speaking)]/20 ring-8 ring-[color:var(--speaking)] shadow-[0_0_80px_rgba(56,189,248,0.5)]"
             : display === "listening"
               ? "bg-[color:var(--success)]/20 ring-8 ring-[color:var(--success)] shadow-[0_0_80px_rgba(16,185,129,0.45)]"
@@ -343,10 +519,10 @@ export default function VoiceSession({
         ].join(" ")}
         role="status"
         aria-live="polite"
-        aria-label={statusText[display]}
+        aria-label={reminding ? 'Reminder' : statusText[display]}
       >
         <span className="px-4 text-2xl font-bold text-foreground">
-          {statusText[display]}
+          {reminding ? 'Time for your task' : statusText[display]}
         </span>
       </div>
 

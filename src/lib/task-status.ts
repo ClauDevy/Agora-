@@ -25,7 +25,7 @@ export interface TaskStatus {
   type: string;
   typeLabel: string;
   label: string;
-  done: boolean;
+  status: 'done' | 'late' | 'no_response' | 'pending';
   doneAt: string | null;
 }
 
@@ -68,18 +68,22 @@ export async function getTodaysTaskStatus(): Promise<PatientTaskStatus[]> {
         .order('sort_order', { ascending: true }),
       db
         .from('task_completions')
-        .select('block_key, done_at')
+        .select('block_key, done_at, late, no_response')
         .eq('patient_id', p.id)
         .eq('done_date', today),
     ]);
 
     if (!taskRows || taskRows.length === 0) continue;
 
-    const doneMap = new Map(
-      (completions ?? []).map((c: { block_key: string; done_at: string }) => [
-        c.block_key,
-        c.done_at,
-      ]),
+    const compMap = new Map(
+      (completions ?? []).map(
+        (c: {
+          block_key: string;
+          done_at: string | null;
+          late: boolean;
+          no_response: boolean;
+        }) => [c.block_key, c],
+      ),
     );
 
     const tasks: TaskStatus[] = (taskRows as {
@@ -87,15 +91,24 @@ export async function getTodaysTaskStatus(): Promise<PatientTaskStatus[]> {
       type: string;
       time: string;
       config: Record<string, unknown>;
-    }[]).map((t) => ({
-      blockKey: t.block_key,
-      time: t.time,
-      type: t.type,
-      typeLabel: TYPE_LABEL[t.type] ?? t.type,
-      label: taskLabel(t.type, t.config),
-      done: doneMap.has(t.block_key),
-      doneAt: doneMap.get(t.block_key) ?? null,
-    }));
+    }[]).map((t) => {
+      const c = compMap.get(t.block_key);
+      let status: TaskStatus['status'] = 'pending';
+      if (c) {
+        if (c.no_response) status = 'no_response';
+        else if (c.late) status = 'late';
+        else if (c.done_at) status = 'done';
+      }
+      return {
+        blockKey: t.block_key,
+        time: t.time,
+        type: t.type,
+        typeLabel: TYPE_LABEL[t.type] ?? t.type,
+        label: taskLabel(t.type, t.config),
+        status,
+        doneAt: c?.done_at ?? null,
+      };
+    });
 
     out.push({ patientId: p.id, patientName: p.name, tasks });
   }
