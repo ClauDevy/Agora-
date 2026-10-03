@@ -45,6 +45,23 @@ export async function getPatient(
   return { id: data.id, name: data.name, language: data.language };
 }
 
+/** Resolve a patient link token to the patient. Null if unknown. */
+export async function getPatientByToken(
+  token: string,
+): Promise<PatientRecord | null> {
+  const db = getSupabaseServer();
+  if (!db) return null;
+
+  const { data, error } = await db
+    .from('patients')
+    .select('id, name, language')
+    .eq('patient_token', token)
+    .maybeSingle();
+
+  if (error || !data) return null;
+  return { id: data.id, name: data.name, language: data.language };
+}
+
 type TaskRow = {
   block_key: string;
   type: 'confirm' | 'coach' | 'checkin';

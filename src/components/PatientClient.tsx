@@ -52,7 +52,13 @@ const AgoraProvider = dynamic(
   { ssr: false },
 );
 
-export default function PatientClient() {
+export default function PatientClient({
+  patientId: patientIdProp,
+  patientName,
+}: {
+  patientId?: string;
+  patientName?: string;
+} = {}) {
   const [showConversation, setShowConversation] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -70,12 +76,13 @@ export default function PatientClient() {
     setError(null);
 
     try {
-      // Read the per-patient link token from the URL: /?patient=<id>
+      // Patient id: from the /p/[token] route (prop) or ?patient= fallback.
       const patientId =
-        typeof window !== 'undefined'
+        patientIdProp ??
+        (typeof window !== 'undefined'
           ? new URLSearchParams(window.location.search).get('patient') ??
             undefined
-          : undefined;
+          : undefined);
 
       // 1. Fetch RTC+RTM token + channel.
       const agoraResponse = await fetch('/api/generate-agora-token');
@@ -184,7 +191,9 @@ export default function PatientClient() {
           AlalAI
         </h1>
         <p className="mt-3 text-lg leading-7 text-muted-foreground">
-          Tap the green button to start talking.
+          {patientName
+            ? `Hello ${patientName}. Tap the green button to start talking.`
+            : 'Tap the green button to start talking.'}
         </p>
 
         <button

@@ -3,7 +3,6 @@
 // visible to the clinician (AGENTS.md section 10: structured logging for every
 // decision). No voice here. All data is DEMO PROTOCOL.
 
-import Link from "next/link";
 import { getSessions, getSessionDetail } from "@/lib/data";
 
 export const metadata = { title: "Session Logs — AlalAI" };
@@ -32,22 +31,14 @@ export default async function LogsPage() {
   );
 
   return (
-    <main className="mx-auto w-full max-w-4xl px-6 py-10">
-      <header className="mb-8 flex items-center justify-between">
-        <div>
-          <h1 className="text-3xl font-bold tracking-tight text-foreground">
-            Session Logs
-          </h1>
-          <p className="mt-1 text-sm text-muted-foreground">
-            Every answer and every escalation decision, logged server-side.
-          </p>
-        </div>
-        <Link
-          href="/clinician"
-          className="rounded-lg border border-[color:var(--card-border)] px-4 py-2 text-sm text-muted-foreground transition hover:text-foreground"
-        >
-          ← Dashboard
-        </Link>
+    <main className="mx-auto w-full max-w-4xl px-4 py-8 sm:px-6">
+      <header className="mb-6">
+        <h1 className="text-3xl font-bold tracking-tight text-foreground">
+          Session Logs
+        </h1>
+        <p className="mt-1 text-sm text-muted-foreground">
+          Every answer and every escalation decision, logged server-side.
+        </p>
       </header>
 
       <div className="mb-6 rounded-lg border border-amber-500/40 bg-amber-500/10 px-4 py-3 text-sm text-amber-300">
@@ -69,7 +60,7 @@ export default async function LogsPage() {
                 key={s.id}
                 className="rounded-[16px] border border-[color:var(--card-border)] bg-[color:var(--surface)]/70 p-5"
               >
-                <div className="flex items-center justify-between">
+                <div className="flex flex-wrap items-center justify-between gap-2">
                   <div>
                     <span className="font-semibold text-foreground">
                       {s.patientName ?? "Unknown patient"}

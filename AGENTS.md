@@ -1,434 +1,442 @@
-# AGENTS.md
+# AlalAI — agent.md
 
-Guidance for AI coding agents (and humans) working on **AlalAI**.
-
-> Anything marked **TBD** is not decided yet. Anything marked **verify** came from quick research and must be checked against current docs before relying on it. Do not invent either one. Ask, or leave a clearly marked placeholder.
+> Read this file fully before writing any code. It is the source of truth for the project.
+> If something here conflicts with a guess you want to make, follow this file. If this file is silent, ask the human instead of inventing.
 
 ---
 
-## 1. What this project is
+## 0. What we are building (one paragraph)
 
-AlalAI is a **voice-first care assistant** for adults 60+ who are home alone after hospital discharge. A clinician writes a care plan on a web page. At scheduled times AlalAI prompts the patient, who opens a **simple patient web app** and talks to the agent. The agent runs the plan by voice (medicine confirmations, wound-dressing coaching, symptom check-ins). If an answer matches a clinician-written warning sign, or the patient stops responding, AlalAI alerts emergency contacts and the clinic.
+**AlalAI** is a voice-first care assistant for older adults who are home alone. A **doctor or nurse** uses a small **admin web interface** to enter patient details, emergency contacts, a medicine/task **schedule**, **instructions**, and **warning signs** ("if swelling or fever, call the medical professional"). The system generates a **private link** for the patient. The patient opens the link once and from then on **only talks**: AlalAI speaks the reminder at the scheduled time, reads the doctor's instructions and precautions, asks whether it was done, asks how the patient feels, answers questions about the schedule, and **escalates** (contacts, then hospital) when the doctor's warning signs are triggered or the patient asks for help.
 
-**Core principle (never violate):**
+**Core principle (never violate): the doctor decides, the AI delivers, deterministic code escalates.**
 
-> **The doctor decides, the AI delivers, the rules escalate.**
+---
 
-Context: hackathon project built around **Agora Convo AI**, entered in the **Agora Track: Voice First**.
+## 1. Hackathon context (from the participant booklet)
 
-### Hackathon context and judging (from the participant booklet)
+Track: **Agora: Voice First**. These are requirements, not preferences.
 
-- **Event:** AWS Innovation Cup Championship, Agora Track "Voice First," October 3-4, 2026, AWS Philippines office, BGC, Taguig. **12-hour build window**, teams of up to 4. Voice First is an access lens across the domain tracks (Climate, Education, Health, Community). AlalAI is a **Health** project.
-- **Required tech:** only **Agora** must be integrated. Any Agora technology counts (Convo AI, SDK, MCP, Skills, CLI). Everything else is our choice. Kiro and Amazon Quick are **optional** per the FAQ (the semi-final rubric text still mentions them, so ask coordinators if that matters).
-- **Subtraction test:** if the product works just as well without voice, it is not voice-first and takes a **5-point penalty** under the MVP criterion. Treat this as a hard design constraint (see the patient client rules below).
-- **Semi-finals:** judged on the submission and repo (1h30m review before pitches), then **4-min pitch + 5-min Q&A + 1-min tech setup**. All tracks pitch simultaneously, so the room is loud.
+- **Agora must be integrated** (Convo AI, Agents SDK, MCP, Skills, etc.). Everything else is our choice. Kiro/Quick are optional for this track.
+- **Voice must be the primary interface** for the underserved user. **Subtraction test:** if removing voice leaves a working normal app, we lose points (5-point penalty stated in the booklet) and fail the track intent.
+  - The admin interface is for clinicians and is allowed to be a screen. The **patient side must have no menus, no forms, no reading required.**
+- Build window is 12 hours, team max 4. Judges review the **GitHub repo**, a **video demo**, and a **live URL** before the pitch.
+- Judges reward: working MVP, real clinical workflow, **good technology judgment (use simple deterministic logic where it is the better choice)**, originality, a clear pitch.
+- Submission fields (the README must make these easy to fill): Project Name, Overview, Target Market, Pain Point (evidence), The How (solution), Strategic Integration (how Agora is used), Sustainability & Growth, Video, GitHub, Live/Beta URL.
 
-| Semi-final criterion | Weight | What the code and repo must show |
+---
+
+## 2. Roles
+
+| Role | Interface | Notes |
 |---|---|---|
-| MVP and technical implementation | 30% | Stable, fast, working end to end. Agora visibly integrated. Voice is essential. |
-| Problem statement and domain fit | 25% | A real clinical workflow (discharge, medicines, wound care), not a theoretical need. |
-| Technology and automation judgment | 25% | Plain-code rules where deterministic is better; AI only where it earns its place. Be ready to say what we chose *not* to use AI for. |
-| Innovation and approach | 15% | Clinician-authored protocol plus the no-response safety net. |
-| Live pitch and Q&A | 5% | One clear moment: the alert firing. Defend functional choices in domain Q&A. |
-
-- **Grand finals (top 3 per track):** 5-min pitch + 5-min Q&A. Criteria: real-world impact 30%, practical deployment and feasibility 25% (clinical workflow, consent, regulatory), scalability and viability 20%, innovation 15%, presentation 10%.
-
-### Two web surfaces, one Next.js app
-
-| Surface | User | Purpose | Voice? |
-|---|---|---|---|
-| **Clinician dashboard** | Doctor / nurse | Create patient, build plan and rules, add contacts, review logs | No (authoring tool) |
-| **Patient client app** | Older adult | Open from a link, tap one big button, then talk | **Yes. Voice does all the work.** |
-
-Plus a **contact view / alerts** for relatives and barangay health workers (SMS or other notification, plus a simulated alert screen for demos).
-
-**Patient client app rules (Voice First):**
-
-- One screen, one huge button to start. Large type, high contrast, minimal text.
-- The screen only starts the session and shows state (listening / speaking / ended). It never carries information the voice doesn't also carry.
-- No login for the patient. Access is by a per-patient link (token) sent by SMS or push. Treat that link as sensitive. TBD: token expiry and revocation.
-- If voice is removed, the patient app must do nothing useful (subtraction test).
-- **Subtraction-test guardrail:** no text inputs, no yes/no or multiple-choice buttons for answering, no menus, no forms for the patient. Answers are spoken. Do not add a tap-to-answer fallback; if voice fails, the uncertainty rule alerts a contact instead. The one tap allowed is the big start button.
-- Quickstart UI such as the transcript rail, pipeline metrics, and pre-call hero card may exist only in a clinician or debug view. The patient must never need them.
+| **Clinician** (doctor/nurse) | Web admin (screen) | Creates patient, schedule, instructions, warning signs. Sees activity and alerts. |
+| **Patient** (older adult, often alone) | Voice-only web app opened via private link | One tap to wake. Everything else by voice. Large text only as a caption, never required. |
+| **Emergency contact** (relative/BHW) | Phone call / message / dashboard alert | Receives alerts. May also be reached by the patient tapping or saying "call Ana". |
 
 ---
 
-## 2. Hard safety rules (non-negotiable)
+## 3. MVP scope
 
-These override any feature request, refactor, or "improvement."
+### MUST (build in this order)
+1. **Admin: patient details** — name, address, language, emergency contacts (name, relationship, phone), nearest hospital (name, phone).
+2. **Admin: schedule builder** — repeating items with time, days, type (medicine / task / check-in), **instructions** text, and **precautions** text.
+3. **Admin: warning signs** — doctor writes if-then rules: symptom label + trigger phrases + action + message to the patient.
+4. **Generate a patient link** (unguessable token, no login).
+5. **Patient voice app** — one tap to wake; at scheduled time AlalAI speaks the reminder + instructions + precautions, asks "done?", asks how the patient feels, listens for warning signs.
+6. **Q&A grounded only in the plan** — "what's my next medicine?", "what time is my dressing?", "what did the doctor say about X?" Anything outside the plan → "I'll ask your doctor" + log it.
+7. **Deterministic rules engine** matches patient speech against the doctor's warning signs (and a small universal safety net) and picks an escalation action.
+8. **Emergency ladder, free-first** (see section 9): dashboard alert → patient's phone dials contact (`tel:`) → dials hospital.
+9. **No-response detection** — if a due reminder isn't answered after retries, raise an alert.
+10. **Activity & alerts feed** for the clinician.
+11. **Demo mode** — "trigger this item now" button and a seeded demo patient.
 
-1. **The LLM never makes medical judgments.** No diagnosis, no severity assessment, no dosing advice, no dose changes, no "that sounds fine."
-2. **Escalation is decided by deterministic code only** (the rules engine). Never route escalation decisions through an LLM.
-3. **Rules run server-side only.** The browser transports audio and transcripts. It never decides levels or sends alerts, because a phone can lock, lose signal, or close the tab.
-4. **The LLM's only jobs:** hold the conversation, and map messy speech ("medyo mabaho") onto **fixed answer fields**.
-5. **Validate all extractor output** against the allowed values for that field. Anything invalid is treated as *unclear*, never guessed.
-6. **Never guess on important answers.** Two failed attempts at the same answer, or signs of confusion, trigger the uncertainty rule (alert a contact).
-7. **No free-text clinical rules.** Rules come from dropdowns/structured fields only.
-8. **All clinical content is a placeholder** unless a clinician supplied it. Every threshold, warning sign, and timing must be labeled `DEMO PROTOCOL` in code comments, seed data, and UI.
-9. **No real patient data** anywhere: not in seeds, tests, logs, screenshots, or the demo.
-10. **Never claim capabilities we lack.** AlalAI cannot dispatch an ambulance, cannot detect falls, and cannot examine the patient. It detects *missed check-ins* and tells people what to do.
-11. **Fail toward alerting.** On errors in the session flow, extractor, or rules engine, the safe default is to log and escalate to a contact, not to stay silent.
-12. **Secrets never reach the browser.** Only variables meant to be public may use the `NEXT_PUBLIC_` prefix (see section 5).
+### SHOULD
+- Doctor writes a normal sentence ("if swelling or fever, call the doctor") and the admin **proposes structured rules for the doctor to review and approve** (LLM assists; the doctor confirms; runtime is still deterministic).
+- Free notification to a contact via Telegram bot or email.
+- Taglish/Filipino/English per-patient language setting.
+- Screen Wake Lock so the patient's phone stays awake.
+
+### NICE
+- QR code for the patient link; multiple patients dashboard polish; per-item "needs a helper" flag.
+
+### DO NOT BUILD (hard no)
+- Diagnosis, severity scoring, or any medical judgment by the AI.
+- Dose calculation, dose changes, or drug advice not typed by the doctor.
+- Wound/photo analysis. Fall detection. Wearables integration.
+- Paid SMS/telephony as a dependency. Real patient data. User accounts for patients.
+- Native mobile app. Multi-clinic tenancy. Billing.
 
 ---
 
-## 3. Tech stack
-
-- **Framework:** Next.js (App Router, TypeScript) with Node.js. Frontend and backend live in the same Next.js app (API routes / route handlers).
-- **Runtime and package manager:** Node.js 22+ (to match the Agora Next.js quickstart, **verify** against its current README) and **npm**. Do not use pnpm or yarn. Keep only `package-lock.json`: if a scaffold or quickstart ships a `pnpm-lock.yaml`, delete it and run `npm install` so Vercel and teammates use one lockfile.
-- **Hosting:** Vercel **Hobby (free)**. The web app must work as a deployed Vercel URL, openable on **laptops and phones**. Hobby is for non-commercial use, which fits the hackathon (**verify**).
-- **Voice:** Agora Convo AI (see section 4).
-- **Styling:** Tailwind CSS (default from the Next.js scaffold). Keep it simple.
-- **Database:** TBD, **free tier only**. Candidates: Neon Postgres (free plan, available through the Vercel Marketplace) or Supabase (free plan). Decide in the first hour. Do not hand-roll storage.
-- **Extractor LLM:** TBD, **free tier only**. Candidate: Gemini API free tier (Flash / Flash-Lite models) with a response schema. The conversation itself uses Agora's managed configuration. The extractor needs structured output that is validated in code.
-- **No paid services.** See section 7.
-- **Commands (if scaffolded from the Agora Next.js quickstart, **verify**):**
+## 4. Architecture
 
 ```
-npm install
-npm run dev               # local dev server
-npm run lint
-npm run typecheck
-npm run build
-npm run verify        # doctor + lint + typecheck + API checks + build, run before shipping
-agora project doctor --deep   # checks Agora credentials, features, network, env binding
+Clinician ──► Admin web (Next.js) ──► API routes ──► Database (Postgres)
+                                           │
+Patient link (/p/[token]) ──► Patient web (voice UI) ◄──► Agora RTC channel ◄──► Agora Conversational AI agent
+                                                                                      │ (LLM request)
+                                                                                      ▼
+                                                              /api/llm  (our "brain" proxy)
+                                                               1. load patient plan from DB
+                                                               2. run RULES ENGINE on latest patient utterance (plain code)
+                                                               3. build system prompt from plan
+                                                               4. call LLM provider, stream answer back
+                                                               5. on rule hit: log event, create alert, tell patient fixed message
+                                                                                      │
+                                                                                      ▼
+                                                        Escalation: dashboard alert → tel: contact → tel: hospital
 ```
 
-Scripts may differ if the project is not scaffolded from the quickstart. Update this list to match `package.json` once it exists.
+### Responsibility split (this is the "Technology & Automation Judgment" story)
+
+| Piece | Done by | Why |
+|---|---|---|
+| Schedule timing, retries, no-response | **Plain code** | Must be exact and predictable |
+| Matching speech to warning signs | **Plain code** (phrase matching) + optional LLM synonym check restricted to the doctor's closed symptom list | Doctor's rules must decide, not the AI |
+| Choosing escalation action | **Plain code** | Safety-critical |
+| Speech-to-text, text-to-speech, turn-taking | **Agora Conversational AI** | This is what Agora is for |
+| Natural phrasing, Taglish replies, answering plan questions | **LLM** (constrained to the plan) | Conversation is the AI's only job |
 
 ---
 
-## 4. Agora setup: install these first
+## 5. Tech stack (recommended; change only with human approval)
 
-AI coding agents must **consult the Agora skill or Agora docs MCP before writing any Agora code**. Do not guess API names, package exports, or config fields.
+- **Next.js (App Router) + TypeScript**, deployed to Vercel for the required live URL.
+- **Supabase** (Postgres + realtime) or any hosted Postgres. Keep schema simple.
+- **Agora**: Conversational AI Engine + Agora RTC Web SDK in the browser; server-side Agora agent SDK or REST for starting/stopping the agent; token generation on the server.
+- **Tailwind CSS** for UI. Patient UI: huge buttons, high contrast, minimal text.
+- **Vitest** (or similar) for unit tests on the rules engine and scheduler.
+- Env vars only for secrets. Never commit keys.
 
-### 4.0 Official starter kit (from the booklet)
+### Agora facts confirmed from Agora docs (as of today)
+- Flow: the browser client joins an **Agora RTC channel**; our **server** calls the Conversational AI Engine **join** endpoint (`POST https://api.agora.io/api/conversational-ai-agent/v2/projects/:appid/join`) with the channel name and a token for the agent; store the returned **agent_id**; call **leave** (`.../agents/:agentId/leave`) to stop it.
+- REST calls use credentials generated per Agora's RESTful authentication page.
+- Agent SDKs exist (Python `agora_agent`, TypeScript `agora-agents`, Go) with an `Agent` → `create_session` → `start()` pattern.
+- The docs say **presets** let you start a first agent **without** your own ASR/LLM/TTS keys.
+- The join request config includes ASR, LLM (with a `url`), and TTS settings.
 
-| Resource | Link |
+### Things you MUST verify in the docs before relying on them (do not guess)
+1. Whether the LLM `url` can point to **our own endpoint** (OpenAI-compatible chat-completions) and what headers/body Agora sends. If yes, use `/api/llm` as designed (Approach A).
+2. If not, how to receive **user transcripts** (data stream / RTM / webhook). Then run the rules engine on transcripts and call `/api/escalate` (Approach B).
+3. **Filipino / Taglish** support in the available ASR and TTS options. Test with real spoken Filipino in hour 1.
+4. How **interruption** ("teka lang") is handled.
+5. Pricing/credits and **session duration limits**. Keep sessions short regardless.
+6. Install **Agora Skills** (listed in the booklet) into your coding tool so it can read Agora docs, and use the docs site as the source of truth.
+
+---
+
+## 6. Data model (Postgres)
+
+```sql
+create table patients (
+  id uuid primary key default gen_random_uuid(),
+  name text not null,
+  address text,
+  language text not null default 'tl-en',      -- 'tl', 'en', 'tl-en'
+  general_instructions text,                    -- doctor's free-text notes the agent may read/answer from
+  hospital_name text,
+  hospital_phone text,
+  emergency_number text default '',             -- admin-configurable; do NOT hard-code
+  patient_token text unique not null,           -- random 32+ chars for /p/[token]
+  created_at timestamptz default now()
+);
+
+create table emergency_contacts (
+  id uuid primary key default gen_random_uuid(),
+  patient_id uuid references patients on delete cascade,
+  name text not null,
+  relationship text,
+  phone text not null,
+  priority int not null default 1,              -- 1 = call first
+  telegram_chat_id text                         -- optional free notification channel
+);
+
+create table schedule_items (
+  id uuid primary key default gen_random_uuid(),
+  patient_id uuid references patients on delete cascade,
+  title text not null,                          -- e.g. "Medicine A (demo)"
+  kind text not null check (kind in ('medicine','task','checkin')),
+  time_of_day text not null,                    -- 'HH:MM' local time
+  days_of_week int[] not null default '{0,1,2,3,4,5,6}',
+  instructions text,                            -- read to the patient VERBATIM
+  precautions text,                             -- read to the patient VERBATIM
+  active boolean default true
+);
+
+create table warning_rules (
+  id uuid primary key default gen_random_uuid(),
+  patient_id uuid references patients on delete cascade,
+  schedule_item_id uuid references schedule_items on delete cascade,  -- null = applies to all check-ins
+  label text not null,                          -- "Swelling"
+  trigger_phrases text[] not null,              -- {"namamaga","pamamaga","swelling","swollen"}
+  action text not null check (action in ('log','notify_contacts','call_contact','go_to_hospital')),
+  patient_message text,                         -- fixed text spoken when triggered
+  require_confirmation boolean default true     -- read back before non-critical escalation
+);
+
+create table events (
+  id uuid primary key default gen_random_uuid(),
+  patient_id uuid references patients on delete cascade,
+  schedule_item_id uuid,
+  kind text not null,   -- reminder_started | confirmed_done | not_done | symptom_reported |
+                        -- question_answered | question_unanswered | escalation | no_response | call_initiated | session_started | session_ended
+  payload jsonb default '{}',
+  created_at timestamptz default now()
+);
+
+create table alerts (
+  id uuid primary key default gen_random_uuid(),
+  patient_id uuid references patients on delete cascade,
+  level text not null,  -- 'notify_contacts' | 'call_contact' | 'go_to_hospital' | 'no_response'
+  reason text not null, -- human-readable: "Patient reported: Swelling"
+  status text not null default 'open',   -- open | acknowledged
+  created_at timestamptz default now()
+);
+```
+
+Index `patients.patient_token`. Add a `last_heartbeat_at` column to `patients` for no-response detection.
+
+---
+
+## 7. Admin interface spec
+
+Protect with a **single shared password from an env var** (`ADMIN_PASSWORD`) for the hackathon. Say so in the README; real auth is roadmap.
+
+**Screens**
+1. **Patients list** → "New patient".
+2. **Patient form**: Name*, Address, Language, General instructions (textarea), Hospital name + phone, Emergency number (optional, doctor-configurable), **Emergency contacts** (repeatable: name, relationship, phone, priority).
+3. **Schedule builder** (per patient): repeatable rows — Title*, Kind (medicine/task/check-in), Time*, Days, **Instructions** (textarea), **Precautions / what to watch for** (textarea).
+4. **Warning signs builder**: repeatable rows — Label*, Trigger phrases (comma-separated, English + Filipino), Action (Log / Notify contacts / Call contact / Go to hospital), Message to patient, "Read back before escalating" checkbox. Scope: all check-ins or one schedule item.
+5. **Patient link panel**: shows `https://<app>/p/<token>`, copy button, "Open as patient", **"Trigger now (demo)"** per schedule item.
+6. **Activity & alerts feed**: alerts at top (open/acknowledged), then events timeline. Auto-refresh every few seconds or realtime.
+
+**Doctor-assist (SHOULD):** textarea "Write the rule in your own words" → LLM returns *proposed* `warning_rules` JSON → UI shows them as editable rows → doctor must click **Approve** before saving. The AI never writes rules silently. Show the label "Suggested by AI — review before saving".
+
+Show a visible banner: *"AlalAI follows the instructions you write. It does not diagnose or replace clinical judgment."*
+
+---
+
+## 8. Patient app spec (`/p/[token]`)
+
+**Voice-first, screen-minimal.** The screen is only a caption and a few giant buttons.
+
+**States**
+1. **Wake screen** (first visit only): one giant button "Tap to start Alalay". This one tap is required because browsers block audio and microphone until a user gesture. Keep the page open afterward. Request the microphone and (optionally) Wake Lock here.
+2. **Idle**: calm screen showing the next scheduled item and time. Sends a **heartbeat** to `/api/heartbeat` every ~30 s.
+3. **Due**: server says an item is due → page starts an Agora voice session with that item as context → AlalAI speaks.
+4. **Conversation**: caption of the last sentence, a mic-active indicator, and a persistent **big "Tulong / Help"** button.
+5. **Escalation**: full-screen with the message and a giant **"Tawagan si Ana"** `tel:` button (see section 9).
+6. **Idle again** after the item completes or ~60 s of silence (end the agent session to save cost).
+
+**Patient can start talking any time** by tapping the screen once ("Kausapin si Alalay") to ask questions. No wake word in MVP.
+
+**Voice commands that always work:** "ulitin mo" (repeat), "teka lang" (pause), "okay na / tapos na" (done), "tulong" (help), "tawagan mo si <name>" (call contact).
+
+---
+
+## 9. Emergency ladder (free-first)
+
+Actions come from the doctor's rule or from the universal safety net. Code executes; the AI only speaks the result.
+
+| Action | What happens (all free) |
 |---|---|
-| Agora Documentation | https://docs.agora.io/en/ |
-| Agora Console | link in the booklet. **Every team member needs an active Agora Console account.** App ID and App Certificate come from here. |
-| Agora Convo AI | https://www.agora.io/en/products/conversational-ai-engine/ |
-| Agora Skills | https://github.com/agoraio/skills |
-| Agora Agents SDK | https://docs.agora.io/en/api-reference/sdks |
-| Agora MCP | https://docs.agora.io/en/realtime-media/cloud-recording/mcp (as listed in the booklet; the hosted server URL below is from Agora's docs, **verify** which to use) |
-| Agora Workshop | https://tinyurl.com/agora-workshop |
+| `log` | Record event. Mention to patient only if the rule has a message. |
+| `notify_contacts` | Create alert → shows on clinician dashboard immediately. Optional free push: Telegram bot message and/or email to contacts. Patient is told "Sinabihan ko na po si <contact>." |
+| `call_contact` | Everything above, **plus** the patient screen shows the giant `tel:` button for contact priority 1 and the agent says it is calling. If the patient says the contact didn't answer, show the next contact, then the hospital. |
+| `go_to_hospital` | Everything above, plus the agent tells the patient to go to / call the hospital now; screen shows `tel:` for the hospital number and the doctor-configured emergency number. Alerts all contacts. |
 
-### 4.1 Agora skills and docs MCP (for the coding agent)
+**Implementation notes**
+- Use `window.location.href = "tel:+63..."` for the call. **Browsers may block navigation not triggered by a user tap**, especially on iOS. Always also render the giant tap-to-call button. The voice agent's job is to announce the action and tell the patient to tap the button. This is acceptable for the MVP; be honest about it in the pitch.
+- The system **cannot dispatch an ambulance or place a call by itself** without paid telephony. State this plainly in the README. Paid auto-SMS/auto-call is roadmap.
+- The emergency number is **configurable per patient**. Do not hard-code a national number in code; verify it with the clinician or an official source and put it in the seed data.
 
-| What | Install / location | Notes |
-|---|---|---|
-| **Agora Skills** (reference files covering Conversational AI, RTC, RTM, token generation) | `npx skills add github:AgoraIO/skills` | Recommended method. Activates automatically on tasks like "build a voice agent." |
-| Same, as a Claude Code plugin | `/plugin marketplace add AgoraIO/skills` then `/plugin install agora` | Add `--scope project` to install for this repo only. |
-| Same, manual | `git clone https://github.com/AgoraIO/skills.git ~/agora-skills`, then point the agent to `skills/agora/` | For tools without the skills CLI (Cursor, Windsurf, Copilot, etc. have their own steps in the repo README). |
-| **Agora docs MCP server** | `https://mcp.agora.io` | Live Agora docs. Bundled when the skills are installed; can also be added alone. |
-
-### 4.2 Agora CLI (project setup)
-
-```
-curl -fsSL https://raw.githubusercontent.com/AgoraIO/cli/main/install.sh | sh -s -- --add-to-path
-agora login
-agora init <project-name> --template nextjs     # scaffolds the Next.js voice quickstart, binds an Agora project, writes .env.local
-agora project doctor --deep                      # run whenever the agent won't join or transcripts are missing
-```
-
-If the repo already exists: `agora project use <your-project>` then `agora project env write .env.local`. **verify** CLI commands against the current Agora CLI README.
-
-### 4.3 Agora libraries the app is expected to use (**verify** exact names and versions in the quickstart's `package.json`; do not guess versions)
-
-| Package / program | Role |
-|---|---|
-| `agora-agent-server-sdk` | **Server side.** Starts and stops agent sessions from Next.js route handlers. |
-| `agora-agent-client-toolkit` | **Client side.** Transcript, agent state, metrics events. |
-| `agora-agent-client-toolkit-react` | React bindings (provider and hooks) for the toolkit. |
-| `agora-agent-uikit` | Optional React components (mic button, agent visualizer). Use only what the patient screen needs. |
-| Agora RTC + RTM web SDKs and token builder | Browser audio join, RTM data channel, server-side token generation. Take the exact packages from the quickstart. |
-
-How the quickstart works (reference model): the browser gets a combined RTC + RTM token from the server, joins the channel, the server invites a cloud agent into the same channel, the browser receives transcript and agent-state events over RTM, and a stop route ends the session. Start from this pattern instead of reinventing it. Recipe repos exist for custom LLM servers and MCP memory servers if ever needed. TBD whether we need them.
-
-### 4.4 Things to verify in Agora docs before committing
-
-- Whether **outbound phone calls (telephony)** are available. Not required: the web app is the primary path. Treat phone calls as roadmap.
-- **Filipino / Taglish** speech recognition and synthesis quality. Test with real Taglish phrases early.
-- **Interruption handling** ("teka lang").
-- **How finalized answers get from the live conversation to the server-side extractor and rules engine** (transcript events relayed from the client, a custom LLM endpoint, tool calls, or another route). Decide once, document here, then stick to it. TBD.
+### Universal safety net (hard-coded, **must be reviewed by a clinician**; label "demo" until then)
+A short list of phrases that always trigger `go_to_hospital` regardless of the doctor's rules, for example: difficulty breathing, chest pain, fainting/unconscious, cannot move, fell, "help"/"tulong". Keep the list in one file (`lib/safety/universal.ts`) with comments. Matching must handle phrases that contain negators (e.g. "hindi ako makahinga" means cannot breathe, so negation filtering must NOT cancel it).
 
 ---
 
-## 5. Environment variables
+## 10. Rules engine (pure functions, unit-tested)
 
-Provided by the Agora Next.js quickstart (**verify**):
+Location: `lib/rules/`. No network, no LLM, no database inside the pure functions.
 
-| Variable | Public? | Notes |
-|---|---|---|
-| `NEXT_PUBLIC_AGORA_APP_ID` | Yes | Agora App ID |
-| `NEXT_AGORA_APP_CERTIFICATE` | **No, server only** | Agora App Certificate. Never prefix with `NEXT_PUBLIC_`. |
-| `NEXT_PUBLIC_AGENT_UID` | Yes | Must match the agent UID used by the invite route |
-| `NEXT_AGENT_GREETING` | No | Optional override of the agent's opening line |
+```ts
+export type Action = 'log' | 'notify_contacts' | 'call_contact' | 'go_to_hospital';
 
-Add more only when a service below is actually adopted. Provide an `.env.example` with names only. Set the same variables in Vercel Project Settings for Production and Preview. Never commit `.env.local`.
-
----
-
-## 6. Architecture and session flow
-
-```
-Clinician dashboard ──► Care plan + rules + contacts (database)
-                              │
-Scheduler ──► at task time: send reminder link to patient (SMS / push)
-                              │
-Patient client app (phone or laptop browser)
-   tap big button ──► token + invite-agent routes ──► Agora Convo AI agent joins
-   voice in/out via Agora, transcript events back to client
-                              │
-              Server: answer extraction ──► fixed answer fields (validated)
-                              │
-              Server: rules engine (plain code) ──► Level 1/2/3
-                              │
-              Logs ──► Clinician view      Alerts ──► SMS / other channel / simulated contact view
-```
-
-| Component | Responsibility | AI involved? |
-|---|---|---|
-| Clinician dashboard | Plans, rules, contacts, logs | No |
-| Scheduler | Fires each task, sends reminder, handles retries | No |
-| Patient client app | Starts the session, shows state, carries audio | No (the agent is Agora's) |
-| Agora Convo AI | Live voice conversation | Yes |
-| Extractor | Maps spoken answers to fixed fields | Yes (output validated) |
-| Rules engine | Matches rules, assigns level, triggers actions | **No** |
-| Alert sender | Notifies contacts and clinic | No |
-| Database + logs | Plans, answers, events | No |
-
----
-
-## 7. External services (free, freemium, or trial only)
-
-**Rule: no paid services.** Every service must have a free, freemium, or trial option that covers the hackathon, with no purchase. If a free limit is hit, fall back to the simulated path. Do not upgrade. Limits below come from quick research, so **verify** each on the provider's current page before relying on it. Everything must be usable from a laptop, a couple of phones, and team members' own accounts.
-
-| Need | Free option | Free limits that matter (**verify**) | Test on laptop / phone |
-|---|---|---|---|
-| Hosting | **Vercel Hobby** | $0, no expiry, non-commercial use only. HTTPS URLs and Preview deployments. **Runtime logs are kept only about 1 hour**, so store our own decision log in the database. | Any browser, any phone |
-| Voice | **Agora Convo AI** | **First 300 minutes free**, then billed per minute. Usage is tracked per developer account; watch it in the Agora Console. RTC also has a monthly free pool; check eligibility. | Browser mic on laptop and phone (needs HTTPS) |
-| SMS | **Twilio free trial** | No credit card. 30-day trial with about 100 free SMS. **Can only send to verified numbers (up to 5)**, from a trial number, and messages carry a "Sent from a Twilio Trial account" prefix. Philippines sending permission must be enabled in the console. | Real SMS to team phones |
-| SMS backup | **SMS.to free trial credits** | Free credits on sign-up (amount, Philippines delivery: unknown). Only if Twilio is blocked. | Team phones |
-| Notification fallback | **Telegram Bot API** | Free. Each recipient starts the bot once. No carrier setup. Good for contact alerts if SMS is slow. | Telegram on phone or laptop |
-| Notification fallback | **Web Push** (PWA) | Free. Android Chrome and desktop work. iOS needs the web app installed to the home screen. Can carry the patient reminder link. | Phone or laptop |
-| Email fallback | **Resend** (or similar) free tier | Free tier exists. Check daily and monthly caps and whether a verified domain is required. Optional. | Any inbox |
-| **Simulated alert** | Built-in "contact view" page | Free. **Required for the demo.** Same data and code path as real alerts, only the transport differs. Always log alerts regardless of transport. | Second phone or laptop |
-| Scheduler | **Free external trigger + manual route** | **Vercel Cron on Hobby runs once per day with hour-level precision, so it cannot drive timed reminders.** Use a protected `run due tasks` route triggered by a free pinger (for example cron-job.org or a scheduled GitHub Actions workflow, both **verify**) plus a manual "run due tasks now" button for the demo. Protect the route with a secret. | Trigger manually in dev |
-| Database | **Neon free plan** (via Vercel Marketplace) or **Supabase free plan** | Neon: about 0.5 GB per project and a monthly compute allowance; it scales to zero, so the **first query after idle is slow. Warm it before the demo.** Supabase: check inactivity pausing. | n/a |
-| Extractor LLM | **Gemini API free tier** (Google AI Studio key) | Flash and Flash-Lite models only, with per-minute and per-day request caps (roughly 15 RPM and 1,500 per day as of mid-2026). **Free-tier inputs may be used to improve Google's models**, so send fake demo data only. | n/a |
-
-**Budget the Agora minutes.** 300 free Convo AI minutes is the tightest limit in the stack. Always stop the agent when the session ends. Never leave a demo agent running. Keep test sessions short. Develop and test the rules engine, extractor, scheduler, and alerts **without live voice sessions** (fixtures and unit tests), and save live sessions for end-to-end checks and the demo. Reserve a chunk of the budget for the final run-throughs and pitch.
-
-**Mic access on phones:** browsers only allow microphone use on HTTPS pages (and `localhost` on the same machine). To test the patient app on a phone, use a Vercel Preview/Production URL or an HTTPS tunnel. Do not expect `http://<laptop-ip>:3000` to get mic access on a phone.
-
-**Transport-agnostic alerts:** write one `sendAlert(level, contact, message)` interface with swappable channels (SMS, Telegram, simulated). The rules engine never knows which channel is used. Trial SMS can only reach verified numbers, so the simulated contact view stays the reliable demo path.
-
-**Never send real alerts to real people during development.** Use team phones only.
-
----
-
-## 8. Domain model
-
-### Care plan block types
-
-Every task is one of three reusable blocks. Do not add new block types without team agreement.
-
-| Block | Purpose | Example |
-|---|---|---|
-| `confirm` | Ask whether a task was done | "Nainom na po ba ang gamot sa umaga?" |
-| `coach` | Walk through steps one at a time, waiting for "okay na" | Wound dressing |
-| `checkin` | Ask fixed questions and record answers | Odor? Fever? Pain 0-10? |
-
-### Plan shape (illustrative, all values are DEMO PROTOCOL)
-
-```json
-{
-  "patient": { "name": "Lolo Ben", "language": "tl-en", "contacts": ["Ana (daughter)", "Barangay Health Worker"] },
-  "tasks": [
-    { "id": "t1", "type": "confirm", "time": "08:00", "text": "gamot sa umaga" },
-    { "id": "t2", "type": "coach", "time": "09:00",
-      "steps": ["hugas ng kamay", "tanggalin ang lumang benda", "linisin", "ilagay ang bagong gasa"],
-      "needs_helper": true },
-    { "id": "t3", "type": "checkin", "time": "09:20", "questions": [
-      { "key": "odor", "ask": "May amoy po ba ang sugat?", "type": "yes_no" },
-      { "key": "fever", "ask": "May lagnat po ba kayo?", "type": "yes_no" },
-      { "key": "pain", "ask": "Gaano po kasakit, mula 0 hanggang 10?", "type": "number" } ] }
-  ],
-  "rules": [
-    { "if": "odor == yes", "then": "level_2" },
-    { "if": "fever == yes AND odor == yes", "then": "level_3" },
-    { "if": "pain >= 8", "then": "level_3" }
-  ],
-  "no_response": { "retries": 2, "gap_minutes": 5, "then": "level_2" }
+export interface WarningRule {
+  id: string; label: string; triggerPhrases: string[];
+  action: Action; patientMessage?: string; requireConfirmation: boolean;
 }
+
+export interface RuleHit { ruleId: string | 'universal'; label: string; action: Action; matchedPhrase: string; }
+
+export function normalize(text: string): string; // lowercase, strip diacritics/punctuation, collapse spaces
+
+export function evaluateUtterance(text: string, rules: WarningRule[]): RuleHit[]; // includes universal safety net
+
+export function strongestAction(hits: RuleHit[]): Action | null; // order: go_to_hospital > call_contact > notify_contacts > log
 ```
 
-Answer types are a closed set (`yes_no`, `number`, and any others the team adds explicitly). The extractor may only return a valid value of the declared type, or `unclear`.
+**Behavior**
+- Match by normalized phrase containment (whole-word aware). Case/diacritic-insensitive.
+- Simple negation guard for **doctor symptom phrases only** ("walang pamamaga", "no swelling" → not a hit). Never apply the guard to universal phrases.
+- If `requireConfirmation` is true and the action is not `go_to_hospital`: the agent reads back ("Narinig ko po na may pamamaga. Tama po ba?"). Yes → escalate. No → log as corrected, no escalation. Unclear twice → treat as uncertain and `notify_contacts`.
+- **Uncertainty rule:** the same important answer misunderstood twice → `notify_contacts` (never guess).
+- Unit-test: positive hits, negation, Taglish phrases, negator-inside-phrase, multiple hits, strongest-action ordering, empty input.
 
-### Escalation levels
-
-| Level | Trigger examples | Action |
-|---|---|---|
-| **1: Note** | Missed dose, mild pain, postponed task | Log for clinician. No alert. |
-| **2: Contact** | Warning sign reported; patient unreachable after retries; uncertainty rule fired | Alert emergency contact plus clinic log entry |
-| **3: Urgent** | Severe warning combination; patient says they feel very unwell | Agent tells patient to call the local emergency number or go to hospital now (**confirm the correct hotline, TBD**). Alert all contacts. |
-
-### Special rules
-
-- **No-response rule:** the patient does not open the link or start the session within the window, or stops answering mid-session. Re-send the reminder (default 2 retries, 5 minutes apart), then Level 2. This is the signature feature; protect it with tests.
-- **Uncertainty rule:** same answer misheard twice, or patient sounds confused, then alert a contact. Never guess.
-- **Needs-helper flag:** before a wound task, the agent asks whether a helper is present.
-
----
-
-## 9. Voice interaction guidelines
-
-When writing prompts, scripts, or agent instructions:
-
-- **Languages:** Filipino, Taglish, English. Default to polite forms (*po*, *opo*).
-- **Pace:** short sentences, one question at a time, slow delivery.
-- **Greeting:** brief and warm, by name ("Magandang umaga po, Lolo Ben.").
-- **Listens for:** yes/no, numbers, and a small phrase set: `okay na`, `ulitin mo`, `teka lang`, `tulong`, `mali`, `hindi pala`.
-- **Unclear speech:** one rephrase, then offer a simple yes/no choice, then treat as uncertain.
-- **Read-backs:** always read back numbers and **any answer that triggers a rule**, and wait for confirmation.
-- **Corrections:** `mali` / `hindi pala` overwrites the last answer before rules run.
-- **Interruptions:** `teka lang` pauses and waits.
-- **Closing:** one-line summary and what happens next ("Tatawag po ulit ako mamayang alas dos." Adjust wording to match the real channel, for example "Magpapadala po ulit ako ng paalala mamayang alas dos.").
-- **Never** let the agent reassure medically ("okay lang yan," "hindi yan seryoso") or explain what a symptom means.
+**Scheduler (`lib/schedule/`)**
+- `getDueItems(patient, now)`: items whose `time_of_day` is within a window of `now` on an allowed day and not already completed today (from `events`). Use the patient's local timezone (default `Asia/Manila`).
+- `getNextItem(patient, now)`.
+- Retries: if a due item has no `confirmed_done`/`not_done` event: re-prompt at +5 min and +10 min (configurable; short for demo). After the last retry → `no_response` alert (`notify_contacts`).
+- **No cron needed for MVP:** expose `/api/tick` that evaluates due items and missed heartbeats. Call it from the patient page heartbeat and from the admin dashboard polling. (A real deployment would use a scheduler.)
+- No-response also fires if the patient's heartbeat is stale (page closed/phone off) while an item is due. Message honestly: "patient did not respond", not "patient is in danger".
+- Demo mode: `/api/demo/trigger` marks an item due now and shortens retry gaps.
 
 ---
 
-## 10. Engineering conventions
+## 11. Voice agent behavior
 
-- **Rules engine = pure functions.** Input: plan rules + answers. Output: level + reasons. No network, no clock, no randomness, no LLM calls. This makes it trivially testable.
-- **Keep AI behind a narrow interface.** The extractor takes an utterance plus a field spec and returns a valid value or `unclear`. Nothing else.
-- **Structured logging for every decision:** timestamp, task id, raw transcript, extracted value, validation result, rule matched, level assigned, action taken. The clinician log and the demo both depend on this.
-- **Validate plans on save and again before use.** Reject malformed plans.
-- **Agora integration must stay visible and easy to find** in the codebase and README (judging requirement).
-- **Keep changes small and readable.** This is a 12-hour build; prefer simple and working over clever. Do not add dependencies without a reason.
-- **Do not impose a directory layout in docs or tooling.** Follow the conventions of the Next.js scaffold and the Agora quickstart.
-- **Do not add a dependency or service that needs payment.** Check for a free tier first. Save free quota (Agora minutes, trial SMS, LLM requests) by testing with fixtures instead of live calls.
+The agent is a **delivery voice**, not a clinician. Build the system prompt dynamically per session from the DB.
 
----
+**System prompt template (fill the `{{ }}` from the database)**
+```
+You are Alalay, a warm, calm voice assistant for an older adult named {{patient.name}}.
+Speak in {{language_instruction}}. Use short sentences. Ask ONE question at a time. Speak slowly.
+Address the patient respectfully (use "po").
 
-## 11. Testing requirements
+YOU ARE NOT A DOCTOR. You never diagnose, never suggest medicines or doses, never change the plan.
+You only use the information below. If asked something not covered, say you will ask the doctor and offer to alert a contact.
 
-Must have tests before the feature freeze:
+TODAY'S ITEM (if any): {{item.title}} at {{item.time}}
+Instructions (read these as written, do not rephrase medical content): {{item.instructions}}
+Precautions (read as written): {{item.precautions}}
 
-- [ ] Each rule in the demo plan fires at the right level (and doesn't fire when it shouldn't)
-- [ ] Boundary values (e.g., `pain >= 8` at 7, 8, 9)
-- [ ] `unclear` or invalid extractor output never triggers a clinical rule, and triggers the uncertainty path after two strikes
-- [ ] No-response: reminders re-sent at the configured gap, then Level 2 fires
-- [ ] A correction (`mali`) overwrites the previous answer before rules run
-- [ ] Alert sending failures are logged and surfaced, not swallowed
-- [ ] Malformed plans are rejected by validation
-- [ ] The simulated alert path and the real channel path produce the same log entries
+GENERAL INSTRUCTIONS FROM THE DOCTOR: {{patient.general_instructions}}
+FULL SCHEDULE: {{list of items with times}}
+WARNING SIGNS THE DOCTOR LISTED (ask about these during check-in): {{labels only}}
+EMERGENCY CONTACTS: {{names only}}
 
-Manual checks (on a deployed Vercel URL, not only localhost):
+CONVERSATION FLOW for a due item:
+1. Greet by name and say what it is time for.
+2. Read the instructions and precautions.
+3. Ask: has the patient done it? (wait for yes/no/not yet)
+4. Ask how they feel and whether they have any of the doctor's warning signs. Ask one at a time.
+5. Summarize in one sentence and say when you will remind next.
 
-- [ ] Full demo script on a real phone, in Taglish, with the screen mostly ignored
-- [ ] Mic permission flow on iOS Safari and Android Chrome
-- [ ] Reminder link opens the patient app and starts the session in one tap
-- [ ] Contact receives the alert on a second device
+RULES:
+- If the system gives you an ESCALATION instruction, say exactly the provided message first, then continue calmly.
+- If the patient sounds unwell or asks for help and you are unsure, ask once, then tell them you will alert their contact.
+- Never promise that help is on the way. Say you are alerting {{contact}} and tell the patient what to do next.
+- If you did not understand an important answer, ask again once in simpler words. Do not guess.
+```
 
----
+**Q&A grounding:** answer only from schedule, instructions, precautions and general instructions. Not found → "Hindi ko po alam iyan. Itatanong ko po sa doktor ninyo." and write a `question_unanswered` event the clinician sees.
 
-## 12. MVP scope
-
-**Must have:** clinician dashboard with the three block types and dropdown rules; patient client app that runs a Confirm, Coach, and Check-in block live through Agora; rules engine with Levels 1-3 and the no-response rule; scheduler plus reminder link; at least one alert channel plus the simulated contact view; clinician-visible logs; README; one seeded demo patient labeled DEMO PROTOCOL; deployed on Vercel and stable and fast there (judges score stability and execution speed).
-
-**Should have:** conversational rescheduling ("nakatulog ako"); needs-helper flag; trend flag by rule.
-
-**Nice to have:** multiple patients, clinic-wide dashboard, regional languages, outbound phone calls if Agora telephony is confirmed.
-
-### Do NOT build
-
-- AI diagnosis or severity judgment
-- Wound photo analysis
-- Dosing advice or dose changes
-- Fall detection
-- Multiple demo conditions
-- Anything using real patient data
-
-If a task seems to require one of these, stop and flag it instead of building it.
+**Tone/pace:** slow, short, polite, no jargon, no long lists, never alarmist.
 
 ---
 
-## 13. Privacy and consent
+## 12. API routes
 
-- Treat all patient data as sensitive health data, even in the demo.
-- Real deployment needs patient consent for storing health data and alerting contacts. The Data Privacy Act likely applies (**verify**).
-- Log only what the product needs. Don't log secrets, and avoid full phone numbers in plain text where possible.
-- Patient access links are credentials. Don't log them or put them in analytics.
-- Seed data uses fictional people ("Lolo Ben," "Ana") and obviously fake phone numbers. For SMS testing, use only team members' own numbers, and keep them out of the repo.
-
----
-
-## 14. Honest limits (keep consistent in docs, UI, and pitch)
-
-- The AI cannot see or examine the patient; it only knows what is said.
-- It detects missed check-ins, not falls or collapses.
-- It cannot dispatch an ambulance.
-- It does not diagnose, change doses, or replace a clinician. Describe it as an *adherence and escalation support tool*.
-- The patient side needs a phone or device with a browser, a microphone, internet, and the ability to tap one button. Patients without these are not served by this version. Outbound phone calls would widen reach but are unconfirmed.
-- Hearing loss, dementia, and unclear speech reduce reliability. Deaf and hard-of-hearing patients are not served by this version.
-- Speech recognition can fail on Taglish, soft speech, and numbers. Read-backs and the uncertainty rule are the mitigation.
-- Plan accuracy is the biggest safety dependency, so the plan is read back to the clinician for confirmation before activation.
-- Market, pricing, and "who pays" claims are unvalidated hypotheses.
-- The demo runs on free and trial tiers: trial SMS reaches verified numbers only, Agora free minutes are limited, and Vercel Hobby is non-commercial. A real deployment would need paid plans and registered SMS sender setup.
-
----
-
-## 15. Definition of done (per change)
-
-- [ ] Respects every rule in section 2
-- [ ] Clinical values are labeled DEMO PROTOCOL
-- [ ] Rules logic stays deterministic, server-side, and covered by tests
-- [ ] Decisions are logged
-- [ ] No secrets or real data committed or exposed to the browser
-- [ ] Agora code was written after consulting the Agora skills or docs MCP
-- [ ] Works on a deployed Vercel URL on a phone, not only on localhost
-- [ ] README updated if setup, behavior, or limits changed
-
----
-
-## 16. Submission checklist (booklet fields)
-
-Teams must complete the submission template **before pitches begin**. Judges review it and the repo for 1h30m first. The fields "form the basis of project evaluation and may be updated," so recheck the booklet near the deadline.
-
-| Field | What we put |
+| Route | Purpose |
 |---|---|
-| Project Name | AlalAI |
-| Project Overview | Voice care assistant that carries out a clinician-written care plan for older adults home alone, and alerts family and clinic when something is wrong. |
-| Target Market | Adults 60+ recently discharged with a chronic condition or wound, living alone for much of the day, plus the clinics that discharge them. |
-| Pain Point (Evidence) | Data-driven, **verified sources only**. No unchecked statistics. Ideally one real quote from a nurse or caregiver. TBD. |
-| The "How" | Clinician plan builder, patient voice client through Agora Convo AI, deterministic rules engine, three escalation levels, no-response detection. |
-| Strategic Integration | Say exactly what Agora does: live voice conversation, speech in and out, agent session management, and how that makes the patient experience possible without a screen. Mention telephony only if confirmed. |
-| Sustainability and Growth | Hypotheses only (clinics and discharge programs as customers). Label unvalidated claims. |
-| Video Demonstration | YouTube, Loom, or Drive link. Shows plan creation, voice session with an interruption, alert firing, no-response. |
-| GitHub Repository Link | Must let judges **verify the Agora implementation**. README explains where and how Agora is used, setup, honest limits, and what we deliberately did not use AI for. |
-| Website URL | Vercel production URL. Open it in a private window and on a phone to confirm it works logged out (preview deployments may sit behind Vercel authentication, **verify**). |
+| `POST /api/admin/login` | Check shared password, set cookie |
+| `CRUD /api/admin/patients`, `/contacts`, `/schedule`, `/rules` | Admin data |
+| `GET /api/patient/[token]/state` | Patient plan, next item, due items, contacts (no admin fields) |
+| `POST /api/heartbeat` | Patient page heartbeat; updates `last_heartbeat_at`; triggers tick |
+| `POST /api/tick` | Evaluate due/missed items, create `no_response` alerts, return due items |
+| `POST /api/agora/token` | Generate RTC token for patient session |
+| `POST /api/agora/start` / `POST /api/agora/stop` | Start/stop the Agora agent for a session (server-side credentials) |
+| `POST /api/llm` | **Brain proxy** for Agora's LLM calls (Approach A): load plan, run rules, call LLM, stream response |
+| `POST /api/escalate` | Create alert + events (used by Approach B or the SOS button) |
+| `POST /api/events` | Log events from the client |
+| `GET /api/admin/feed` | Alerts + events for the dashboard |
+| `POST /api/admin/ai/propose-rules` | (SHOULD) LLM proposes structured rules from the doctor's sentence |
+| `POST /api/demo/trigger` | Demo mode trigger |
 
-Timing and demo:
-
-- Plan for a feature freeze with real buffer before the submission deadline. Do not spend the last hour on features.
-- Pitch setup is 1 minute: pre-open the deployed app, the clinician dashboard, and a second device for the contact view before the slot.
-- Loud room: use a headset or close mic. Keep a recorded backup of the demo.
+Security: patient routes authorize by `patient_token` only and must never return other patients' data or admin-only fields. Admin routes require the admin cookie. Validate all inputs (zod).
 
 ---
 
-## 17. When unsure
+## 13. Safety & honesty requirements
 
-Ask the team rather than guessing, especially about: clinical content, hotline numbers, thresholds, consent wording, Agora capabilities, and SMS provider limits. A clearly marked placeholder is always better than a plausible-sounding invention.
+- Show a visible disclaimer on admin and in the README: **decision-support for adherence and escalation; not a medical device; does not diagnose.**
+- All seed medical content must be labeled **"DEMO PROTOCOL — not medical advice."** Never present invented clinical rules as real.
+- AlalAI **does not see or examine the patient**; it only knows what the patient says. It detects **missed check-ins**, not falls.
+- Hearing loss, unclear speech, and dementia reduce reliability. Deaf/hard-of-hearing patients are not served by this version. Say so.
+- **Privacy:** store only what the plan needs; consent is needed to store health data and alert contacts (check the Data Privacy Act with someone qualified). Don't log raw audio. Store transcripts only if needed for the event feed, and say so.
+- Never log or print API secrets.
 
-<!-- BEGIN:nextjs-agent-rules -->
+---
 
-# This is NOT the Next.js you know
+## 14. Seed data (DEMO PROTOCOL — not medical advice)
 
-This version has breaking changes — APIs, conventions, and file structure may all differ from your training data. Read the relevant guide in `node_modules/next/dist/docs/` (resolved from this file's directory; in monorepos the `next` package may not be visible from the repo root) before writing any code. Heed deprecation notices.
+Patient: **Lolo Ben**, language `tl-en`, address "Sample St., Quezon City (demo)".
+Contacts: Ana (daughter, priority 1), Barangay Health Worker (priority 2). Use fake phone numbers.
+Hospital: "Demo General Hospital" + fake number.
 
-This block is written and re-added by `next dev` — verify at `node_modules/next/dist/server/lib/generate-agent-files.js`. Removing it from a diff only re-creates the uncommitted change; committing it with your work keeps the tree clean.
+Schedule (times adjustable; demo can trigger now):
+1. **Medicine A (demo)** — 08:00 — instructions: "Take 1 tablet with water after breakfast." precautions: "Do not take on an empty stomach."
+2. **Wound dressing (demo)** — 09:00 — instructions: "Wash hands, remove old dressing, clean gently, apply new gauze. Ask a helper if you cannot do it yourself." precautions: "Watch for swelling, bad smell, or fever."
+3. **Evening check-in (demo)** — 18:00 — instructions: "Let us talk about how your day went."
 
-<!-- END:nextjs-agent-rules -->
+Warning signs:
+- Swelling → phrases `{namamaga, pamamaga, swelling, swollen}` → `call_contact`, message: "Sasabihan ko po si Ana. Tawagan po natin siya ngayon."
+- Bad smell → `{mabaho, may amoy, foul smell, bad smell}` → `notify_contacts`
+- Fever → `{lagnat, nilalagnat, fever}` → `notify_contacts`
+- Severe symptom combination: handled by universal safety net.
+
+---
+
+## 15. Acceptance tests (the demo must pass these)
+
+1. Admin creates a patient with 2 contacts, 3 schedule items, 3 warning signs, and gets a patient link.
+2. Opening the link on a phone and tapping once starts the voice session; AlalAI greets Lolo Ben by name.
+3. Clicking **Trigger now** on an item makes AlalAI speak that item's instructions and precautions **exactly as the doctor wrote them**.
+4. Saying "tapos na" logs `confirmed_done`.
+5. Saying "namamaga ang paa ko" → read-back → "oo" → rule fires → alert appears on the dashboard within seconds → patient screen shows the **tap-to-call Ana** button.
+6. Saying "hindi ako makahinga" triggers the universal safety net immediately, with no read-back.
+7. Asking "anong oras ang susunod kong gamot?" is answered correctly from the schedule.
+8. Asking "pwede ba akong uminom ng alak?" (not in plan) → "itatanong ko po sa doktor" + a `question_unanswered` event.
+9. Letting a due item go unanswered through all retries creates a `no_response` alert.
+10. Closing the patient page while an item is due creates a `no_response` alert (stale heartbeat).
+11. Rules engine unit tests pass.
+12. The README states limitations honestly.
+
+---
+
+## 16. Working rules for the coding agent
+
+- **Plan before coding.** For each task, write a short plan, then implement. Make small, reviewable changes; one feature per task; commit after each working step.
+- **Do not invent Agora API shapes.** Read the Agora docs or the Agora Skills/MCP. If a detail is unclear, write a tiny spike, run it, and report what actually works.
+- **Rules engine = pure, tested, boring.** No LLM calls inside it.
+- **Never hard-code medical content** outside the labeled seed file and the universal safety list.
+- **Keep patient UI minimal**: giant buttons, high contrast, captions only. Do not add menus, forms, or settings to the patient side.
+- **All user-facing patient strings** live in one file with Filipino and English versions.
+- Validate inputs with zod. Never expose service keys to the browser (only the Agora App ID and short-lived tokens).
+- Add `.env.example` with every variable name (no values).
+- Write the README as you go, using the headings in section 17.
+- If a requirement here is unclear or conflicts with reality (e.g. an Agora feature is unavailable), **stop and ask the human** with 2 concrete options. Do not silently change the design.
+
+### Cut list (if time runs out, drop in this order)
+1. Telegram/email notifications
+2. Doctor-assist rule proposals
+3. Multiple patients polish, QR code
+4. Wake Lock
+Never cut: Agora voice, rules engine, tap-to-call escalation, no-response alert, README honesty section.
+
+---
+
+## 17. README structure (maps to the booklet's submission fields)
+
+1. **Project name & overview**
+2. **Target market** — adults 60+ living alone (much of the day) with a clinician care plan, plus the clinics that discharge them
+3. **Pain point (evidence)** — verified sources only; mark anything unverified as such
+4. **How it works** — architecture diagram from section 4
+5. **Strategic Agora integration** — exactly what Agora does (real-time voice session, speech in/out, agent lifecycle) and why it matters for this user
+6. **Why voice is essential (subtraction test)** — patient side has no screen; clinician dashboard is an authoring tool
+7. **Technology judgment** — what is deterministic code vs AI, and why
+8. **Safety & limitations** (section 13)
+9. **Sustainability & growth** — hypothesis: clinics/discharge programs and barangay health programs as customers; same engine for other prescribed home-care routines. State as hypothesis, not fact.
+10. **Run it locally** + env vars + demo script
+11. **Links**: video, live URL
