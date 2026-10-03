@@ -102,6 +102,10 @@ export default function VoiceSession({
   // The task currently being reminded (so a patient "yes" logs THIS task,
   // independent of fragile agent-question text matching).
   const activeReminderKey = useRef<{ key: string; type: string } | null>(null);
+  // Count of patient responses during the post-task check-in (ends it).
+  const checkinResponses = useRef(0);
+  // Mirror of checkinPhase for reads inside the transcript handler closure.
+  const checkinPhaseRef = useRef(false);
 
   // StrictMode guard (from quickstart): delay useJoin's ready flag past the
   // fake-unmount cycle so the channel is joined exactly once.
@@ -244,6 +248,8 @@ export default function VoiceSession({
               // Move into the post-task CHECK-IN: nudge the AI to ask how the
               // patient feels / any pain / warning signs, one at a time.
               setCheckinPhase(true);
+              checkinPhaseRef.current = true;
+              checkinResponses.current = 0;
               const aiNow = aiRef.current;
               if (aiNow) {
                 void aiNow
@@ -254,10 +260,24 @@ export default function VoiceSession({
                     responseInterruptable: true,
                   })
                   .catch(() => {});
-                // Auto-clear the check-in phase after a reasonable window.
-                setTimeout(() => setCheckinPhase(false), 90000);
+                // Fallback: clear the check-in phase if nothing else ends it.
+                setTimeout(() => {
+                  checkinPhaseRef.current = false;
+                  setCheckinPhase(false);
+                }, 60000);
               }
               return; // handled; skip the generic record-turn path
+            }
+
+            // During the CHECK-IN phase, each patient reply counts. After the
+            // patient has answered the check-in questions (2 replies), end the
+            // phase and return the UI to normal standby.
+            if (checkinPhaseRef.current) {
+              checkinResponses.current += 1;
+              if (checkinResponses.current >= 2) {
+                checkinPhaseRef.current = false;
+                setCheckinPhase(false);
+              }
             }
 
             // Find the most recent completed agent turn before this one.
