@@ -43,15 +43,17 @@ export async function POST(request: NextRequest) {
     plan_id?: string;
     session_id?: string;
     block_key?: string;
-    kind?: 'no_response' | 'late';
+    kind?: 'no_response' | 'late' | 'done';
   };
   const db = getSupabaseServer();
   if (!db || !body.patient_id || !body.block_key || !body.kind) {
     return NextResponse.json({ ok: false }, { status: 400 });
   }
 
-  // Record a marker row in task_completions: for 'late', mark done+late; for
-  // 'no_response', record a non-done marker so logs can show "didn't respond".
+  // Record a marker row in task_completions:
+  //   done        -> done_at set, late/no_response false
+  //   late        -> done_at set, late true
+  //   no_response -> done_at null, no_response true
   await db.from('task_completions').upsert(
     {
       patient_id: body.patient_id,
@@ -59,7 +61,7 @@ export async function POST(request: NextRequest) {
       session_id: body.session_id ?? null,
       block_key: body.block_key,
       done_date: manilaDate(),
-      done_at: body.kind === 'late' ? new Date().toISOString() : null,
+      done_at: body.kind === 'no_response' ? null : new Date().toISOString(),
       late: body.kind === 'late',
       no_response: body.kind === 'no_response',
     },

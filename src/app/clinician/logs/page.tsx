@@ -5,6 +5,7 @@
 import { getSessions, getSessionDetail } from "@/lib/data";
 import { getOverdueItems } from "@/lib/overdue";
 import { getTodaysTaskStatus } from "@/lib/task-status";
+import { AutoRefresh } from "@/components/AutoRefresh";
 
 export const metadata = { title: "Session Logs — AlalAI" };
 export const dynamic = "force-dynamic";
@@ -35,6 +36,7 @@ export default async function LogsPage() {
 
   return (
     <main className="mx-auto w-full max-w-4xl px-4 py-8 sm:px-6">
+      <AutoRefresh seconds={5} />
       <header className="mb-6">
         <h1 className="text-3xl font-bold tracking-tight text-foreground">
           Today&apos;s activity

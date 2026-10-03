@@ -97,6 +97,9 @@ export default function VoiceSession({
   const reminderState = useRef<
     Record<string, { attempts: number; lastMin: number; finished: boolean }>
   >({});
+  // The task currently being reminded (so a patient "yes" logs THIS task,
+  // independent of fragile agent-question text matching).
+  const activeReminderKey = useRef<{ key: string; type: string } | null>(null);
 
   // StrictMode guard (from quickstart): delay useJoin's ready flag past the
   // fake-unmount cycle so the channel is joined exactly once.
@@ -198,11 +201,45 @@ export default function VoiceSession({
           items.forEach((item, idx) => {
             const turnId = item.turn_id ?? idx;
             if (!isComplete(item.status)) return;
+            if (typeof item.text === 'string' && item.text.trim()) {
+              console.log(
+                `[transcript] uid=${item.uid} isPatient=${isPatient(item.uid)} text="${item.text.trim()}"`,
+              );
+            }
             if (!isPatient(item.uid)) return;
             if (submittedTurns.current.has(turnId)) return;
             const utterance =
               typeof item.text === 'string' ? item.text.trim() : '';
             if (!utterance) return;
+
+            submittedTurns.current.add(turnId);
+
+            // If a reminder is ACTIVE and the patient clearly affirms, log THAT
+            // task done directly — reliable, independent of agent-question text.
+            const active = activeReminderKey.current;
+            const u = utterance.toLowerCase();
+            const hasNegation =
+              /\b(no|not|haven't|havent|hindi|wala|didn't|didnt|hindi pa|not yet)\b/.test(
+                u,
+              );
+            const hasAffirmative =
+              /\b(yes|yeah|yep|yup|oo|opo|tapos na|done na|i did|i already|just did|already did|took it|i took|i'm done|im done|i am done)\b/.test(
+                u,
+              );
+            const affirmative = hasAffirmative && !hasNegation;
+            console.log(
+              `[confirm] patient said: "${utterance}" | activeReminder=${active?.key ?? 'none'} | affirmative=${affirmative}`,
+            );
+            if (active && active.type !== 'checkin' && affirmative) {
+              const st = reminderState.current[active.key];
+              if (st) st.finished = true;
+              activeReminderKey.current = null;
+              setReminding(false);
+              setReminderBanner(null);
+              markOutcome(active.key, 'done');
+              console.log(`[confirm] logged DONE for ${active.key}`);
+              return; // handled; skip the generic record-turn path
+            }
 
             // Find the most recent completed agent turn before this one.
             let agentQuestion = '';
@@ -215,7 +252,6 @@ export default function VoiceSession({
               }
             }
 
-            submittedTurns.current.add(turnId);
             // Fire-and-forget; the server decides and logs. Non-fatal on error.
             void fetch('/api/record-turn', {
               method: 'POST',
@@ -268,7 +304,7 @@ export default function VoiceSession({
 
   // Log a reminder outcome (late / no_response) for the professional's logs.
   const markOutcome = useCallback(
-    (blockKey: string, kind: 'late' | 'no_response') => {
+    (blockKey: string, kind: 'late' | 'no_response' | 'done') => {
       if (!patientId) return;
       void fetch('/api/patient-status', {
         method: 'POST',
@@ -296,7 +332,16 @@ export default function VoiceSession({
   const LATE_GRACE_MIN = 2;
 
   useEffect(() => {
-    if (schedule.length === 0) return;
+    if (schedule.length === 0) {
+      console.warn('[reminder] no schedule — reminders disabled');
+      return;
+    }
+    console.log(
+      '[reminder] loop started with',
+      schedule.length,
+      'task(s):',
+      schedule.map((s) => `${s.time}:${s.label}`).join(', '),
+    );
 
     const toMin = (hhmm: string) => {
       const [h, m] = hhmm.split(':').map(Number);
@@ -307,21 +352,6 @@ export default function VoiceSession({
     // time is at/after this, so opening a call doesn't replay past tasks.
     const startNow = new Date();
     const sessionStartMin = startNow.getHours() * 60 + startNow.getMinutes();
-
-    // Speak a reminder with the browser's built-in TTS (deterministic, exact,
-    // no dependency on the LLM or RTM).
-    const speak = (text: string) => {
-      try {
-        const synth = window.speechSynthesis;
-        if (!synth) return;
-        synth.cancel();
-        const u = new SpeechSynthesisUtterance(text);
-        u.rate = 0.95;
-        synth.speak(u);
-      } catch {
-        /* speech not available — the on-screen banner still shows */
-      }
-    };
 
     const tick = async () => {
       const now = new Date();
@@ -341,6 +371,7 @@ export default function VoiceSession({
 
       let anyReminding = false;
       let activeBanner: string | null = null;
+      let activeKey: { key: string; type: string } | null = null;
 
       for (const item of schedule) {
         const key = item.blockKey ?? item.time;
@@ -366,10 +397,17 @@ export default function VoiceSession({
         if (nowMin < taskMin) continue; // not time yet
         if (taskMin < sessionStartMin) {
           // Time passed before this session started — don't nag.
+          if (!st.finished)
+            console.log(
+              `[reminder] task ${key} (${item.time}) was before session start (${sessionStartMin}m) — skipping`,
+            );
           st.finished = true;
           continue;
         }
 
+        console.log(
+          `[reminder] task ${key} (${item.time}) is DUE now (${nowMin}m), attempts=${st.attempts}`,
+        );
         const sinceLast = nowMin - st.lastMin;
         const firstTime = st.attempts === 0;
         if (firstTime || sinceLast >= RETRY_GAP_MIN) {
@@ -379,40 +417,64 @@ export default function VoiceSession({
             continue;
           }
 
+          const ai = aiRef.current;
+          if (!ai) {
+            console.warn(
+              `[reminder] task ${key} is DUE (${item.time}) but AgoraVoiceAI not ready yet — retrying`,
+            );
+            continue; // agent not ready yet; retry next tick (don't count)
+          }
+
           st.attempts += 1;
           st.lastMin = nowMin;
           anyReminding = true;
           activeBanner = `It's time for ${item.label}`;
+          activeKey = { key, type: item.type };
+          console.log(
+            `[reminder] FIRING task ${key} "${item.label}" at ${item.time} (attempt ${st.attempts})`,
+          );
 
-          // 1) DETERMINISTIC delivery — on-screen banner + spoken reminder.
-          const spoken =
-            st.attempts === 1
-              ? `It's time for ${item.label}. ${item.type === 'checkin' ? "Let's do your check-in." : 'Please do it now, then tell me when you are done.'}`
-              : `Reminder ${st.attempts}: it's still time for ${item.label}. Please tell me when you've done it.`;
-          speak(spoken);
+          // The AI is the SINGLE voice. Send it an AUTHORITATIVE instruction so
+          // it stops standby and announces the reminder. It overrides any "not
+          // time yet" belief. The wording includes the task label so the
+          // patient's "yes" is matched to this task by /api/record-turn.
+          const taskName =
+            item.type === 'confirm'
+              ? item.label
+              : item.type === 'coach'
+                ? 'your step-by-step task'
+                : 'your check-in';
+          const msg =
+            item.type === 'checkin'
+              ? `SYSTEM: It is NOW ${item.time}, time for ${taskName}. It IS time now — do not say it is not time. Begin the check-in: ask the questions one at a time.`
+              : `SYSTEM: It is NOW ${item.time}, time for "${item.label}". It IS time now — do not say it is not time. Say warmly: "It's time to ${item.label}." Then ask the patient: "Did you ${item.label}?" When they confirm yes, acknowledge warmly and briefly.`;
 
-          // 2) BEST-EFFORT — also nudge the AI so it continues the conversation.
-          const ai = aiRef.current;
-          if (ai) {
-            ai
-              .sendText(agentUID, {
-                messageType: ChatMessageType.TEXT,
-                text: `IT IS TIME FOR: ${item.label} (scheduled ${item.time}). Reminder ${st.attempts} of ${MAX_ATTEMPTS}. Remind the patient warmly, run the task, and ask them to confirm when done.`,
-                priority: ChatMessagePriority.INTERRUPTED,
-                responseInterruptable: true,
-              })
-              .catch(() => {
-                /* non-fatal; the spoken/banner reminder already happened */
-              });
-          }
+          void ai
+            .sendText(agentUID, {
+              messageType: ChatMessageType.TEXT,
+              text: msg,
+              priority: ChatMessagePriority.INTERRUPTED,
+              responseInterruptable: true,
+            })
+            .then(() => {
+              console.log(`[reminder] sendText OK for ${key}`);
+            })
+            .catch((e) => {
+              console.error(`[reminder] sendText FAILED for ${key}:`, e);
+              // Send failed — roll back so it retries next tick.
+              st.attempts -= 1;
+              st.lastMin = -Infinity;
+            });
         } else {
           anyReminding = true;
           activeBanner = `It's time for ${item.label}`;
+          activeKey = { key, type: item.type };
         }
       }
 
       setReminding(anyReminding);
       setReminderBanner(activeBanner);
+      activeReminderKey.current = activeKey;
     };
 
     void tick(); // run immediately
@@ -501,6 +563,9 @@ export default function VoiceSession({
           </p>
           <p className="mt-1 text-3xl font-extrabold text-amber-100">
             {reminderBanner}
+          </p>
+          <p className="mt-2 text-sm text-amber-200/80">
+            Just tell me when you&apos;ve done it.
           </p>
         </div>
       )}
