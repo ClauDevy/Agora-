@@ -6,6 +6,7 @@ import { getSessions, getSessionDetail } from "@/lib/data";
 import { getOverdueItems } from "@/lib/overdue";
 import { getTodaysTaskStatus } from "@/lib/task-status";
 import { AutoRefresh } from "@/components/AutoRefresh";
+import { ResetTaskButton } from "@/components/ResetTaskButton";
 
 export const metadata = { title: "Session Logs — AlalAI" };
 export const dynamic = "force-dynamic";
@@ -118,30 +119,38 @@ export default async function LogsPage() {
                         </span>
                         <span className="text-foreground">{t.label}</span>
                       </span>
-                      {t.status === "done" ? (
-                        <span className="rounded bg-[color:var(--success)]/20 px-2 py-0.5 text-xs font-semibold text-[color:var(--success)]">
-                          ✓ Done
-                          {t.doneAt
-                            ? " " +
-                              new Date(t.doneAt).toLocaleTimeString([], {
-                                hour: "numeric",
-                                minute: "2-digit",
-                              })
-                            : ""}
-                        </span>
-                      ) : t.status === "late" ? (
-                        <span className="rounded bg-amber-500/20 px-2 py-0.5 text-xs font-semibold text-amber-300">
-                          ⏰ Done late
-                        </span>
-                      ) : t.status === "no_response" ? (
-                        <span className="rounded bg-rose-500/20 px-2 py-0.5 text-xs font-semibold text-rose-300">
-                          ✕ Didn&apos;t respond
-                        </span>
-                      ) : (
-                        <span className="rounded bg-slate-500/20 px-2 py-0.5 text-xs font-semibold text-slate-300">
-                          Not done yet
-                        </span>
-                      )}
+                      <span className="flex items-center gap-2">
+                        {t.status === "done" ? (
+                          <span className="rounded bg-[color:var(--success)]/20 px-2 py-0.5 text-xs font-semibold text-[color:var(--success)]">
+                            ✓ Done
+                            {t.doneAt
+                              ? " " +
+                                new Date(t.doneAt).toLocaleTimeString([], {
+                                  hour: "numeric",
+                                  minute: "2-digit",
+                                })
+                              : ""}
+                          </span>
+                        ) : t.status === "late" ? (
+                          <span className="rounded bg-amber-500/20 px-2 py-0.5 text-xs font-semibold text-amber-300">
+                            ⏰ Done late
+                          </span>
+                        ) : t.status === "no_response" ? (
+                          <span className="rounded bg-rose-500/20 px-2 py-0.5 text-xs font-semibold text-rose-300">
+                            ✕ Didn&apos;t respond
+                          </span>
+                        ) : (
+                          <span className="rounded bg-slate-500/20 px-2 py-0.5 text-xs font-semibold text-slate-300">
+                            Not done yet
+                          </span>
+                        )}
+                        {t.status !== "pending" && (
+                          <ResetTaskButton
+                            patientId={p.patientId}
+                            blockKey={t.blockKey}
+                          />
+                        )}
+                      </span>
                     </li>
                   ))}
                 </ul>

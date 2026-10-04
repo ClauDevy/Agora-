@@ -70,3 +70,29 @@ export async function POST(request: NextRequest) {
 
   return NextResponse.json({ ok: true });
 }
+
+// Reset today's completion log so a task can fire / be confirmed again.
+//   DELETE ?patient=<id>              -> clears ALL of today's completions
+//   DELETE ?patient=<id>&block=<key>  -> clears only that task's completion
+// Used by the clinician "Reset" button and after a task's time changes.
+export async function DELETE(request: NextRequest) {
+  const patientId = request.nextUrl.searchParams.get('patient');
+  const blockKey = request.nextUrl.searchParams.get('block');
+  const db = getSupabaseServer();
+  if (!db || !patientId) {
+    return NextResponse.json({ ok: false }, { status: 400 });
+  }
+
+  let q = db
+    .from('task_completions')
+    .delete()
+    .eq('patient_id', patientId)
+    .eq('done_date', manilaDate());
+  if (blockKey) q = q.eq('block_key', blockKey);
+
+  const { error } = await q;
+  if (error) {
+    return NextResponse.json({ ok: false, error: error.message }, { status: 500 });
+  }
+  return NextResponse.json({ ok: true, reset: blockKey ?? 'all' });
+}

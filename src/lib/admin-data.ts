@@ -70,6 +70,17 @@ function generateToken(): string {
   return randomBytes(24).toString('hex');
 }
 
+// Local date (Asia/Manila) as YYYY-MM-DD — matches task_completions.done_date
+// usage elsewhere (lib/data.ts, api/patient-status).
+function manilaDate(): string {
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Manila',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).format(new Date());
+}
+
 /** List all patients with their token and a task count. */
 export async function listPatients(): Promise<PatientListItem[]> {
   const db = getSupabaseServer();
@@ -410,18 +421,56 @@ export async function updatePatientWithPlan(
     );
   }
 
-  // 4. Replace tasks.
+  // 4. Replace tasks. First, capture the OLD tasks so we can detect time
+  // changes and reset today's completion for any task whose time moved —
+  // otherwise a task marked "done" earlier today would never fire at its new
+  // time. Block keys are positional (t1, t2, ...), so they stay stable across
+  // the replace and line up with task_completions rows.
+  const { data: oldTasks } = await db
+    .from('plan_tasks')
+    .select('block_key, time')
+    .eq('plan_id', planId);
+  const oldTimeByKey = new Map(
+    (oldTasks ?? []).map((t: { block_key: string; time: string }) => [
+      t.block_key,
+      t.time,
+    ]),
+  );
+
   await db.from('plan_tasks').delete().eq('plan_id', planId);
-  if (input.tasks.length) {
-    await db.from('plan_tasks').insert(
-      input.tasks.map((t, i) => ({
-        plan_id: planId,
-        block_key: `t${i + 1}`,
-        type: t.type,
-        time: t.time,
-        sort_order: i,
-        config: taskConfig(t),
-      })),
+  const newTasks = input.tasks.map((t, i) => ({
+    plan_id: planId,
+    block_key: `t${i + 1}`,
+    type: t.type,
+    time: t.time,
+    sort_order: i,
+    config: taskConfig(t),
+  }));
+  if (newTasks.length) {
+    await db.from('plan_tasks').insert(newTasks);
+  }
+
+  // Reset today's completion for tasks whose time changed (or that no longer
+  // exist at that key). done_date uses Asia/Manila to match the rest of the app.
+  const changedKeys = newTasks
+    .filter((t) => oldTimeByKey.get(t.block_key) !== t.time)
+    .map((t) => t.block_key);
+  // Also reset keys that were removed entirely (old key not in the new set).
+  const newKeys = new Set(newTasks.map((t) => t.block_key));
+  for (const [oldKey] of oldTimeByKey) {
+    if (!newKeys.has(oldKey) && !changedKeys.includes(oldKey)) {
+      changedKeys.push(oldKey);
+    }
+  }
+  if (changedKeys.length) {
+    await db
+      .from('task_completions')
+      .delete()
+      .eq('patient_id', patientId)
+      .eq('done_date', manilaDate())
+      .in('block_key', changedKeys);
+    console.log(
+      `[reset] cleared today's completions for changed/removed tasks: ${changedKeys.join(', ')}`,
     );
   }
 
