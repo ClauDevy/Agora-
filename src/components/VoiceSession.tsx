@@ -106,6 +106,12 @@ export default function VoiceSession({
   const checkinResponses = useRef(0);
   // Mirror of checkinPhase for reads inside the transcript handler closure.
   const checkinPhaseRef = useRef(false);
+  // Live mirror of the schedule prop for reads inside the transcript handler
+  // closure (which only runs its init effect once).
+  const scheduleRef = useRef(schedule);
+  useEffect(() => {
+    scheduleRef.current = schedule;
+  }, [schedule]);
 
   // StrictMode guard (from quickstart): delay useJoin's ready flag past the
   // fake-unmount cycle so the channel is joined exactly once.
@@ -222,7 +228,26 @@ export default function VoiceSession({
 
             // If a reminder is ACTIVE and the patient clearly affirms, log THAT
             // task done directly — reliable, independent of agent-question text.
-            const active = activeReminderKey.current;
+            // The ref can be momentarily null between the tick clearing it and
+            // the next tick re-setting it, so fall back to deriving the active
+            // reminding task straight from reminderState (any non-checkin task
+            // that has been reminded at least once and isn't finished yet).
+            let active = activeReminderKey.current;
+            if (!active) {
+              for (const item of scheduleRef.current) {
+                const k = item.blockKey ?? item.time;
+                const rs = reminderState.current[k];
+                if (
+                  rs &&
+                  rs.attempts > 0 &&
+                  !rs.finished &&
+                  item.type !== 'checkin'
+                ) {
+                  active = { key: k, type: item.type };
+                  break;
+                }
+              }
+            }
             const u = utterance.toLowerCase();
             const hasNegation =
               /\b(no|not|haven't|havent|hindi|wala|didn't|didnt|hindi pa|not yet)\b/.test(
@@ -508,6 +533,20 @@ export default function VoiceSession({
           anyReminding = true;
           activeBanner = `It's time for ${item.label}`;
           activeKey = { key, type: item.type };
+        }
+      }
+
+      // Re-check finished flags at WRITE time. This tick is async (it awaited a
+      // network poll above), so the confirmation handler may have marked the
+      // active task done WHILE this tick was in flight. Without this guard, a
+      // stale tick would clobber the handler's setReminding(false) and the UI
+      // would be stuck in "Reminding" even though the patient already said yes.
+      if (activeKey) {
+        const liveSt = reminderState.current[activeKey.key];
+        if (liveSt?.finished) {
+          anyReminding = false;
+          activeBanner = null;
+          activeKey = null;
         }
       }
 

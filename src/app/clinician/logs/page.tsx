@@ -36,7 +36,7 @@ export default async function LogsPage() {
 
   return (
     <main className="mx-auto w-full max-w-4xl px-4 py-8 sm:px-6">
-      <AutoRefresh seconds={5} />
+      <AutoRefresh seconds={8} />
       <header className="mb-6">
         <h1 className="text-3xl font-bold tracking-tight text-foreground">
           Today&apos;s activity

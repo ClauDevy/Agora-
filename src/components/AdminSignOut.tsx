@@ -4,10 +4,13 @@ import { useRouter } from 'next/navigation';
 
 export function AdminSignOut() {
   const router = useRouter();
-  async function signOut() {
-    await fetch('/api/admin/login', { method: 'DELETE' }).catch(() => {});
+  function signOut() {
+    // Optimistic: go to the login screen immediately; clear the cookie in the
+    // background and refresh once it's done so server state stays correct.
     router.push('/admin/login');
-    router.refresh();
+    void fetch('/api/admin/login', { method: 'DELETE' })
+      .catch(() => {})
+      .finally(() => router.refresh());
   }
   return (
     <button
